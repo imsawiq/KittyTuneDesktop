@@ -30,6 +30,8 @@ class ListeningStatsViewModel : ViewModel() {
         private set
     var report by mutableStateOf<ListeningReport?>(null)
         private set
+    var reportPeriod by mutableStateOf(ReportPeriod.WEEK)
+        private set
     var isLoading by mutableStateOf(true)
         private set
 
@@ -72,6 +74,7 @@ class ListeningStatsViewModel : ViewModel() {
             }
             events = rows.filter { it.timestamp >= window.startMs && it.timestamp < window.endMs }
                 .sortedByDescending { it.timestamp }
+            reportPeriod = selected
             report = built
             isLoading = false
         }

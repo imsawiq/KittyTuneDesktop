@@ -1300,8 +1300,8 @@ fun MainScreen(
 
     CoverViewerOverlay()
 
-    // Sidebar actions can open search while neither of the dedicated lyrics views is present.
-    if (playerViewModel.isSearchingLyrics && !playerViewModel.showLyricsSheet && !playerViewModel.isLyricsFullScreen) {
+    // Search covers the window while the central or sidebar lyrics stay in place underneath.
+    if (playerViewModel.isSearchingLyrics && !playerViewModel.isLyricsFullScreen) {
         com.alananasss.kittytune.ui.player.lyrics.SearchLyricsDialog(
             viewModel = playerViewModel,
             onDismiss = { playerViewModel.isSearchingLyrics = false },

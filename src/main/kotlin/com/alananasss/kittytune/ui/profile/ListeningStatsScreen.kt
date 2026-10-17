@@ -88,6 +88,7 @@ fun ListeningStatsScreen(
         StatsHeader(
             report = report,
             period = viewModel.period,
+            reportPeriod = viewModel.reportPeriod,
             style = style,
             onSelect = viewModel::selectPeriod,
             onStyle = {
@@ -98,24 +99,25 @@ fun ListeningStatsScreen(
         )
 
         AnimatedContent(
-            targetState = report?.takeIf { !viewModel.isLoading }?.let { it to style },
+            targetState = report?.takeIf { !viewModel.isLoading }?.let { Triple(it, style, viewModel.reportPeriod) },
             transitionSpec = { fadeIn(tween(220, delayMillis = 60)) togetherWith fadeOut(tween(90)) },
             // Keyed on where the span starts, not on the whole window: a window runs up to "now", so every
             // listen that finished while the screen was open gave it a new key, and the whole page was built
             // again under the pointer, hover lost and charts growing in from zero (issue #66).
-            contentKey = { it?.let { (r, s) -> r.window.startMs to s } },
+            // Keep the selected period too: different reports can begin on the same calendar day.
+            contentKey = { it?.let { (r, s, p) -> Triple(r.window.startMs, s, p) } },
             modifier = Modifier.fillMaxSize(),
             label = "statsBody",
         ) { shown ->
-            val (shownReport, shownStyle) = shown ?: (null to style)
+            val (shownReport, shownStyle, shownPeriod) = shown ?: Triple(null, style, viewModel.reportPeriod)
             when {
                 shownReport == null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     ContainedLoadingIndicator()
                 }
                 !shownReport.hasData -> EmptyStats()
-                shownStyle == StatsStyle.OVERVIEW -> OverviewStats(shownReport, viewModel.period, { openList = it }, onTrackClick, onArtistClick)
-                shownStyle == StatsStyle.COMPACT -> CompactStats(shownReport, viewModel.period, { openList = it }, onTrackClick, onArtistClick)
-                else -> StoryStats(shownReport, viewModel.period, { openList = it }, onTrackClick, onArtistClick)
+                shownStyle == StatsStyle.OVERVIEW -> OverviewStats(shownReport, shownPeriod, { openList = it }, onTrackClick, onArtistClick)
+                shownStyle == StatsStyle.COMPACT -> CompactStats(shownReport, shownPeriod, { openList = it }, onTrackClick, onArtistClick)
+                else -> StoryStats(shownReport, shownPeriod, { openList = it }, onTrackClick, onArtistClick)
             }
         }
     }
@@ -125,6 +127,7 @@ fun ListeningStatsScreen(
 private fun StatsHeader(
     report: ListeningReport?,
     period: ReportPeriod,
+    reportPeriod: ReportPeriod,
     style: StatsStyle,
     onSelect: (ReportPeriod) -> Unit,
     onStyle: (StatsStyle) -> Unit,
@@ -143,7 +146,7 @@ private fun StatsHeader(
                     maxLines = 2,
                 )
                 Text(
-                    report?.let { spanLabel(period, it) } ?: " ",
+                    report?.let { spanLabel(reportPeriod, it) } ?: " ",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

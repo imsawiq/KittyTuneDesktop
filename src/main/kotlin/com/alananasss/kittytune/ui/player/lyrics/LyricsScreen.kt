@@ -126,7 +126,6 @@ import kotlin.math.roundToInt
         viewModel: PlayerViewModel,
         onClose: () -> Unit
     ) {
-        val isSearching = viewModel.isSearchingLyrics
         val currentTrack = viewModel.uiCurrentTrack
         var showQuickSettingsDialog by remember { mutableStateOf(false) }
         var showUploadYamlDialog by remember { mutableStateOf(false) }
@@ -161,149 +160,140 @@ import kotlin.math.roundToInt
             Scaffold(
                 containerColor = Color.Transparent,
                 topBar = {
-                    if (!isSearching) {
-                        CenterAlignedTopAppBar(
-                            title = {
-                                if (currentTrack != null) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 8.dp)
-                                    ) {
-                                        AsyncImage(
-                                            model = currentTrack.fullResArtwork,
-                                            contentDescription = null,
-                                            modifier = Modifier
-                                                .size(36.dp)
-                                                .clip(RoundedCornerShape(8.dp)),
-                                            contentScale = ContentScale.Crop
+                    CenterAlignedTopAppBar(
+                        title = {
+                            if (currentTrack != null) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                ) {
+                                    AsyncImage(
+                                        model = currentTrack.fullResArtwork,
+                                        contentDescription = null,
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .clip(RoundedCornerShape(8.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(horizontalAlignment = Alignment.Start) {
+                                        Text(
+                                            text = currentTrack.title ?: "",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
-                                        Spacer(Modifier.width(10.dp))
-                                        Column(horizontalAlignment = Alignment.Start) {
-                                            Text(
-                                                text = currentTrack.title ?: "",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            ArtistLinkText(
+                                                track = currentTrack,
+                                                onArtistClick = { viewModel.navigateToTrackArtist(it) },
+                                                text = currentTrack.displayArtist.ifBlank { currentTrack.user?.username.orEmpty() },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                hoverColor = MaterialTheme.colorScheme.onSurface,
+                                                modifier = Modifier.weight(1f, fill = false)
                                             )
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                ArtistLinkText(
-                                                    track = currentTrack,
-                                                    onArtistClick = { viewModel.navigateToTrackArtist(it) },
-                                                    text = currentTrack.displayArtist.ifBlank { currentTrack.user?.username.orEmpty() },
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    hoverColor = MaterialTheme.colorScheme.onSurface,
-                                                    modifier = Modifier.weight(1f, fill = false)
-                                                )
-                                                if (currentTrack.user?.verified == true) {
-                                                    Spacer(Modifier.width(3.dp))
-                                                    Icon(Icons.Rounded.Verified, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
-                                                }
+                                            if (currentTrack.user?.verified == true) {
+                                                Spacer(Modifier.width(3.dp))
+                                                Icon(Icons.Rounded.Verified, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(12.dp))
                                             }
                                         }
                                     }
-                                } else {
-                                    Text(
-                                        str("player_lyrics"),
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
                                 }
-                            },
-                            navigationIcon = {
-                                IconButton(shapes = IconButtonDefaults.shapes(), onClick = onClose) {
-                                    Icon(Icons.Rounded.Close, str("btn_close"), tint = MaterialTheme.colorScheme.onSurface)
-                                }
-                            },
-                            actions = {
-                                IconButton(shapes = IconButtonDefaults.shapes(), onClick = { showQuickSettingsDialog = true }) {
-                                    Icon(Icons.Rounded.Tune, str("pref_lyrics_title"), tint = MaterialTheme.colorScheme.onSurface)
-                                }
-                                IconButton(shapes = IconButtonDefaults.shapes(), onClick = { viewModel.isSearchingLyrics = true }) {
-                                    Icon(Icons.Rounded.Search, str("lyrics_manual_search"), tint = MaterialTheme.colorScheme.onSurface)
-                                }
-                                // Raises the player over the whole window. This screen is one of three
-                                // columns, so the big view cannot live in it — it is an overlay, and this is
-                                // the way in (issue #33).
-                                IconButton(
-                                    shapes = IconButtonDefaults.shapes(),
-                                    onClick = { viewModel.isLyricsFullScreen = true },
-                                ) {
-                                    Icon(
-                                        Icons.Rounded.OpenInFull,
-                                        str("lyrics_fullscreen"),
-                                        tint = MaterialTheme.colorScheme.onSurface,
-                                    )
-                                }
-                            },
-                            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-                        )
-                    }
+                            } else {
+                                Text(
+                                    str("player_lyrics"),
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        },
+                        navigationIcon = {
+                            IconButton(shapes = IconButtonDefaults.shapes(), onClick = onClose) {
+                                Icon(Icons.Rounded.Close, str("btn_close"), tint = MaterialTheme.colorScheme.onSurface)
+                            }
+                        },
+                        actions = {
+                            IconButton(shapes = IconButtonDefaults.shapes(), onClick = { viewModel.isSearchingLyrics = true }) {
+                                Icon(Icons.Rounded.Search, str("lyrics_manual_search"), tint = MaterialTheme.colorScheme.onSurface)
+                            }
+                            IconButton(shapes = IconButtonDefaults.shapes(), onClick = { showQuickSettingsDialog = true }) {
+                                Icon(Icons.Rounded.Tune, str("pref_lyrics_title"), tint = MaterialTheme.colorScheme.onSurface)
+                            }
+                            // Raises the player over the whole window. This screen is one of three
+                            // columns, so the big view cannot live in it — it is an overlay, and this is
+                            // the way in (issue #33).
+                            IconButton(
+                                shapes = IconButtonDefaults.shapes(),
+                                onClick = { viewModel.isLyricsFullScreen = true },
+                            ) {
+                                Icon(
+                                    Icons.Rounded.OpenInFull,
+                                    str("lyrics_fullscreen"),
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+                    )
                 }
             ) { innerPadding ->
                 BoxWithConstraints(modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)) {
 
-                    if (isSearching) {
-                        SearchLyricsView(
-                            viewModel = viewModel,
-                            onCloseSearch = { viewModel.isSearchingLyrics = false }
-                        )
-                    } else {
-                        if (viewModel.lyricsLines.isEmpty() && viewModel.rawPlainLyrics.isNullOrBlank()) {
-                            if (viewModel.isLyricsLoading) {
-                                SearchingLyricsState(viewModel)
-                            } else {
-                                EmptyLyricsState(onManualSearch = { viewModel.isSearchingLyrics = true })
-                            }
+                    if (viewModel.lyricsLines.isEmpty() && viewModel.rawPlainLyrics.isNullOrBlank()) {
+                        if (viewModel.isLyricsLoading) {
+                            SearchingLyricsState(viewModel)
                         } else {
-                            AnimatedContent(
-                                targetState = viewModel.lyricsMode,
-                                transitionSpec = {
-                                    fadeIn(animationSpec = tween(400)) + scaleIn(initialScale = 0.95f) togetherWith
-                                            fadeOut(animationSpec = tween(300))
-                                },
-                                label = "LyricsModeTransition",
-                                modifier = Modifier.fillMaxSize()
-                            ) { mode ->
-                                when (mode) {
-                                    LyricsMode.SYNCED -> {
-                                        when (viewModel.lyricsUiStyle) {
-                                            com.alananasss.kittytune.data.local.LyricsUiStyle.ENHANCED -> {
-                                                LyricsEnhanced(
-                                                    viewModel = viewModel,
-                                                    textColorOverride = null
-                                                )
-                                            }
-                                            com.alananasss.kittytune.data.local.LyricsUiStyle.CLASSIC -> {
-                                                SyncedLyricsView(viewModel)
-                                            }
+                            EmptyLyricsState(onManualSearch = { viewModel.isSearchingLyrics = true })
+                        }
+                    } else {
+                        AnimatedContent(
+                            targetState = viewModel.lyricsMode,
+                            transitionSpec = {
+                                fadeIn(animationSpec = tween(400)) + scaleIn(initialScale = 0.95f) togetherWith
+                                        fadeOut(animationSpec = tween(300))
+                            },
+                            label = "LyricsModeTransition",
+                            modifier = Modifier.fillMaxSize()
+                        ) { mode ->
+                            when (mode) {
+                                LyricsMode.SYNCED -> {
+                                    when (viewModel.lyricsUiStyle) {
+                                        com.alananasss.kittytune.data.local.LyricsUiStyle.ENHANCED -> {
+                                            LyricsEnhanced(
+                                                viewModel = viewModel,
+                                                textColorOverride = null
+                                            )
+                                        }
+                                        com.alananasss.kittytune.data.local.LyricsUiStyle.CLASSIC -> {
+                                            SyncedLyricsView(viewModel)
                                         }
                                     }
-                                    LyricsMode.PLAIN -> {
-                                        PlainLyricsView(viewModel)
-                                    }
+                                }
+                                LyricsMode.PLAIN -> {
+                                    PlainLyricsView(viewModel)
                                 }
                             }
+                        }
 
-                            if (hasSynced && hasPlain) {
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.TopCenter)
-                                        .padding(top = 16.dp)
-                                        .zIndex(10f)
-                                ) {
-                                    LyricsModeSelector(
-                                        currentMode = viewModel.lyricsMode,
-                                        onModeSelected = { viewModel.lyricsMode = it },
-                                        hasSynced = hasSynced,
-                                        hasPlain = hasPlain
-                                    )
-                                }
+                        if (hasSynced && hasPlain) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .padding(top = 16.dp)
+                                    .zIndex(10f)
+                            ) {
+                                LyricsModeSelector(
+                                    currentMode = viewModel.lyricsMode,
+                                    onModeSelected = { viewModel.lyricsMode = it },
+                                    hasSynced = hasSynced,
+                                    hasPlain = hasPlain
+                                )
                             }
                         }
                     }

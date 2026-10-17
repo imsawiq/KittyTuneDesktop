@@ -30,6 +30,7 @@ import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.OpenInFull
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
@@ -286,7 +287,8 @@ private fun LyricsPreview(vm: PlayerViewModel, onOpenFullLyrics: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            // Same glyph and same label as the gear on the full screen, because it opens the same dialog.
+            PanelToolButton(Icons.Rounded.Search, str("lyrics_manual_search"), onClick = { vm.isSearchingLyrics = true })
+            Spacer(Modifier.width(6.dp))
             PanelToolButton(Icons.Rounded.Settings, str("pref_lyrics_title"), onClick = { showQuickSettings = true })
             Spacer(Modifier.width(6.dp))
             PanelToolButton(Icons.Rounded.OpenInFull, str("btn_fullscreen"), onClick = onOpenFullLyrics)
