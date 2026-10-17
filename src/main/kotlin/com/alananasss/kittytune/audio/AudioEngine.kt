@@ -727,7 +727,8 @@ class AudioEngine {
         url: String,
         headers: Map<String, String>,
         resumePosMs: Long,
-        maxAttempts: Int = Int.MAX_VALUE
+        maxAttempts: Int = Int.MAX_VALUE,
+        onRecoveredFrame: ((Frame) -> Unit)? = null,
     ): Pair<FFmpegFrameGrabber?, String?> {
         oldGrabber?.releaseUnlockedQuietly()
 
@@ -759,9 +760,8 @@ class AudioEngine {
                 val f = try { newG.grabSamples() } catch (_: Exception) { null }
                 if (f != null) {
                     val samples = f.samples
-                    if (samples != null) {
-                        pushFrame(samples, f.audioChannels)
-                    }
+                    if (onRecoveredFrame != null) onRecoveredFrame(f)
+                    else if (samples != null) pushFrame(samples, f.audioChannels)
                     Logger.e("AudioEngine", "Recovery succeeded on attempt $attempt!")
                     return Pair(newG, currentUrlToTry)
                 }
@@ -903,11 +903,11 @@ class AudioEngine {
                             headers,
                             seek,
                             maxAttempts = if (warmUpRequested) WARM_UP_RECOVERY_ATTEMPTS else INITIAL_OPEN_ATTEMPTS,
+                            onRecoveredFrame = { seekFrame = it },
                         )
                         if (recovered.first != null) {
                             grabber = recovered.first
                             if (recovered.second != null) activeUrl = recovered.second!!
-                            seekFrame = try { grabber?.grabSamples() } catch (_: Exception) { null }
                             seekOk = seekFrame != null
                         } else {
                             if (revision != seekRevision) continue

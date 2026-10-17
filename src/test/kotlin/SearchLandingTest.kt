@@ -225,16 +225,15 @@ class SearchLandingTest {
 
     @Test
     fun testLikedArtistUpdatesSkipWhatIsAlreadyLiked() {
-        val vm = source("ui/home/HomeViewModel.kt")
-        assertTrue(vm.contains("fetchLikedArtistUpdates"), "The shelf has to be built from the liked list")
-        assertTrue(
-            vm.contains("it.id !in likedIds"),
-            "A song already liked is not news, and would fill the shelf with what is already known",
+        val liked = com.alananasss.kittytune.domain.Track(
+            id = 1L, title = "Known", artworkUrl = null, durationMs = 1000L, user = null, source = "soundcloud",
         )
-        assertTrue(
-            vm.contains("ARTIST_UPDATE_SOURCES = 10"),
-            "One request per artist, on the home screen's critical path: a handful, not all of them",
+        val fresh = liked.copy(id = 2L, title = "New")
+        val otherProvider = liked.copy(source = "spotify")
+        val visible = com.alananasss.kittytune.data.artist.ReleaseCatalog.unlikedTracks(
+            listOf(liked, fresh, fresh, otherProvider), listOf(liked),
         )
+        assertEquals(listOf(fresh, otherProvider), visible)
     }
 
     // ── Localisation ──

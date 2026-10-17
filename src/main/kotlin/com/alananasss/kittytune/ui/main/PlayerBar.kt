@@ -640,12 +640,36 @@ private fun PlaybackProgressRow(vm: PlayerViewModel) {
     val shownFraction = if (isScrubbingNow) (position.toFloat() / duration).also { mix.noteShown(it) }
     else mix.shownFraction(position.toFloat() / duration, vm.uiCurrentTrack?.id)
     val glowColor = MaterialTheme.colorScheme.primary
+    val timeStyle = MaterialTheme.typography.labelSmall.copy(fontFeatureSettings = "tnum")
+    val timeMeasurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    // The hour format is localized and can include words. Include a 59-minute sample so
+    // an exact hour duration also reserves room for its longer intermediate labels.
+    val timeTemplates = listOf(
+        makeTimeString(duration),
+        makeTimeString(0L),
+        makeTimeString((duration / 3_600_000L) * 3_600_000L + 59L * 60_000L),
+    )
+    val timeWidth = remember(timeTemplates, timeStyle, timeMeasurer, density) {
+        val widthPx = timeTemplates.maxOf { text ->
+            timeMeasurer.measure(
+                androidx.compose.ui.text.AnnotatedString("-" + text.map { if (it.isDigit()) '8' else it }.joinToString("")),
+                style = timeStyle,
+                maxLines = 1,
+                softWrap = false,
+            ).size.width
+        }
+        with(density) { widthPx.toDp() } + 2.dp
+    }
 
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
             text = makeTimeString(position),
-            style = MaterialTheme.typography.labelSmall,
+            style = timeStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier.width(timeWidth),
         )
         PlayerSlider(
             value = (shownFraction * duration).coerceIn(0f, duration.toFloat()),
@@ -674,12 +698,14 @@ private fun PlaybackProgressRow(vm: PlayerViewModel) {
         val showRemaining = rememberShowRemainingTime()
         Text(
             text = if (showRemaining) "-" + makeTimeString((duration - position).coerceAtLeast(0L)) else makeTimeString(duration),
-            style = MaterialTheme.typography.labelSmall,
+            style = timeStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false,
             textAlign = TextAlign.End,
             // Wide enough for the longest time, so flipping between the length and the countdown never moves the bar.
             modifier = Modifier
-                .widthIn(min = 52.dp)
+                .width(timeWidth + 8.dp)
                 .clip(RoundedCornerShape(6.dp))
                 .clickable {
                     com.alananasss.kittytune.data.local.PlayerPreferences().setShowRemainingTime(!showRemaining)
@@ -743,13 +769,16 @@ private fun ExpressiveToggleButton(
             .clickable(interactionSource = interaction, indication = ripple(), onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            icon,
-            contentDescription = contentDescription,
-            tint = if (selected) MaterialTheme.colorScheme.onSecondaryContainer
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
-        )
+        val tint = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+        if (icon == Icons.Rounded.Shuffle) {
+            com.alananasss.kittytune.ui.common.animation.AnimatedShuffleIcon(
+                active = selected,
+                interactionSource = interaction,
+                contentDescription = contentDescription,
+                tint = tint,
+                modifier = Modifier.size(20.dp),
+            )
+        } else Icon(icon, contentDescription = contentDescription, tint = tint, modifier = Modifier.size(20.dp))
     }
 }
 

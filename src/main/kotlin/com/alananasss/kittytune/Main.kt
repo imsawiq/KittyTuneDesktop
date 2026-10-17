@@ -98,6 +98,8 @@ fun main(args: Array<String>) {
     // Before anything heavy loads: a second launch only has to wake the first one up.
     // Arguments are files the OS asked us to open ("Open with", a double-click on an associated file).
     if (!com.alananasss.kittytune.core.SingleInstance.acquire(args.toList())) return
+    val startupSplash = com.alananasss.kittytune.ui.startup.StartupSplash.show()
+    try {
     runCatching {
         androidx.compose.ui.platform.registerSkikoComposeImplementation()
     }
@@ -649,6 +651,13 @@ fun main(args: Array<String>) {
                     }
                 }
             }
+            LaunchedEffect(Unit) {
+                // Keep initialization on its established threads, and retire the splash only after
+                // the real window has had a chance to paint its first complete frame.
+                androidx.compose.runtime.withFrameNanos { }
+                androidx.compose.runtime.withFrameNanos { }
+                startupSplash.close()
+            }
         } // End Window
         } // End CompositionLocalProvider
 
@@ -683,6 +692,9 @@ fun main(args: Array<String>) {
             },
         )
     } // End application
+    } finally {
+        startupSplash.close()
+    }
 } // End main
 
 

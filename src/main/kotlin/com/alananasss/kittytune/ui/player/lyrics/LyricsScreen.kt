@@ -1,6 +1,8 @@
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
     package com.alananasss.kittytune.ui.player.lyrics
 
+import com.alananasss.kittytune.ui.player.lyrics.timing.rememberSmoothPosition
+
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.ToggleButton
@@ -440,7 +442,15 @@ import kotlin.math.roundToInt
     
         // Reading along by hand wins for a while; the panel's copy of the lyrics follows the same
         // rule, which is why this lives in one place (issue #33).
-        val readingByHand = FollowActiveLine(listState, activeIndex, centred = true, contentKey = lyrics.size to lyrics.firstOrNull()?.startTime)
+        val wheelScope = androidx.compose.runtime.rememberCoroutineScope()
+        var lastWheelScrollMs by remember { mutableStateOf(0L) }
+        val readingByHand = FollowActiveLine(
+            listState, activeIndex, centred = true,
+            contentKey = lyrics.size to lyrics.firstOrNull()?.startTime,
+            manualScrollMs = lastWheelScrollMs,
+            isPlaying = viewModel.uiIsPlaying,
+            positionMs = viewModel.uiCurrentPosition,
+        )
         val focusIndex = rememberFocusLine(listState, activeIndex, readingByHand)
     
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -455,6 +465,7 @@ import kotlin.math.roundToInt
                     .fillMaxSize()
                     .revealWhenPlaced(listState, activeIndex, contentKey = lyrics.size to lyrics.firstOrNull()?.startTime)
                     .stopAtLastLine(listState)
+                    .lyricsWheel(listState, wheelScope, { viewModel.lyricsWheelLines }) { lastWheelScrollMs = System.currentTimeMillis() }
                     .fadingEdge(fadeBrush),
                 verticalArrangement = Arrangement.spacedBy(24.dp)
             ) {

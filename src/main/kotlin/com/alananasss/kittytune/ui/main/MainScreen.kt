@@ -122,6 +122,7 @@ fun MainScreen(
     val libraryViewModel: LibraryViewModel = viewModel { LibraryViewModel(AppInstance.application) }
 
     val navController = rememberNavController()
+    val effectsCatalogDrag = remember { com.alananasss.kittytune.ui.player.EffectCatalogDragState() }
     val playerPrefs = remember { com.alananasss.kittytune.data.local.PlayerPreferences() }
     var showNowPlayingPanel by remember { mutableStateOf(playerPrefs.getRightPanelOpen()) }
     var nowPlayingTab by remember { mutableStateOf(NowPlayingTab.TRACK) }
@@ -663,6 +664,14 @@ fun MainScreen(
                         popEnterTransition = { navPopEnter(navSlidePx) },
                         popExitTransition = { navPopExit(navSlidePx) },
                     ) {
+                        composable("effects") {
+                            com.alananasss.kittytune.ui.player.EffectsPanel(
+                                viewModel = playerViewModel,
+                                catalogOnly = true,
+                                catalogDrag = effectsCatalogDrag,
+                                onCloseCatalog = { navController.popBackStack() },
+                            )
+                        }
                         composable("home") {
                             HomeContent(
                                 homeViewModel = homeViewModel,
@@ -1259,6 +1268,11 @@ fun MainScreen(
                         playerPrefs.setRightPanelOpen(false)
                     },
                     onOpenFullLyrics = { playerViewModel.showLyricsSheet = !playerViewModel.showLyricsSheet },
+                    effectsCatalogDrag = effectsCatalogDrag,
+                    onOpenEffectsCatalog = {
+                        playerViewModel.showLyricsSheet = false
+                        navController.navigate("effects") { launchSingleTop = true }
+                    },
                     modifier = Modifier
                         .width(rightPanelWidth)
                         .onPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Enter) { PanelHistory.pointerInside = true }
@@ -1285,6 +1299,14 @@ fun MainScreen(
     com.alananasss.kittytune.ui.library.LikeAllPromptHost()
 
     CoverViewerOverlay()
+
+    // Sidebar actions can open search while neither of the dedicated lyrics views is present.
+    if (playerViewModel.isSearchingLyrics && !playerViewModel.showLyricsSheet && !playerViewModel.isLyricsFullScreen) {
+        com.alananasss.kittytune.ui.player.lyrics.SearchLyricsDialog(
+            viewModel = playerViewModel,
+            onDismiss = { playerViewModel.isSearchingLyrics = false },
+        )
+    }
 
     Box(
         modifier = Modifier.fillMaxSize(),

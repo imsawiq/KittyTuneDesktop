@@ -107,9 +107,11 @@ fun ExpandedQueueScreen(
                     else
                         MaterialTheme.colorScheme.onSurface
 
-                    IconButton(shapes = IconButtonDefaults.shapes(), onClick = { viewModel.toggleShuffle() }) {
-                        Icon(
-                            imageVector = Icons.Rounded.Shuffle,
+                    val shuffleInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                    IconButton(interactionSource = shuffleInteraction, shapes = IconButtonDefaults.shapes(), onClick = { viewModel.toggleShuffle() }) {
+                        com.alananasss.kittytune.ui.common.animation.AnimatedShuffleIcon(
+                            active = viewModel.uiShuffleEnabled,
+                            interactionSource = shuffleInteraction,
                             contentDescription = str("queue_shuffle"),
                             tint = shuffleColor
                         )

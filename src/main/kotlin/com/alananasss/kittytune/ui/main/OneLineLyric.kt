@@ -38,11 +38,11 @@ import com.alananasss.kittytune.ui.player.LyricsMode
 import com.alananasss.kittytune.ui.player.PlayerViewModel
 import com.alananasss.kittytune.ui.player.lyrics.LyricLine
 import com.alananasss.kittytune.ui.player.lyrics.LyricLineText
-import com.alananasss.kittytune.ui.player.lyrics.LyricsScrolling
 import com.alananasss.kittytune.ui.player.lyrics.LyricsUtils
-import com.alananasss.kittytune.ui.player.lyrics.rememberSmoothPosition
+import com.alananasss.kittytune.ui.player.lyrics.timing.rememberSmoothPosition
 import com.alananasss.kittytune.ui.player.lyrics.separateBackingVocals
-import com.alananasss.kittytune.ui.player.lyrics.withEvenWords
+import com.alananasss.kittytune.ui.player.lyrics.withRevealedWords
+import com.alananasss.kittytune.ui.player.lyrics.pacedPlainLyrics
 
 /**
  * The line being sung, in a small card floating above the play button (issue #66): for when the app is open for
@@ -63,7 +63,7 @@ internal fun FloatingLyricChip(vm: PlayerViewModel, modifier: Modifier = Modifie
     // Untimed text is paced the way the full screen scrolls it, line after line at the reader's chosen speed, so the card
     // moves through it at the same rate as the page does and fills each line the same smooth way.
     val plainLines = remember(plainText, plainSpeed, followsPlain) {
-        if (followsPlain) pacedPlainLines(plainText, plainSpeed) else emptyList()
+        if (followsPlain) pacedPlainLyrics(plainText, plainSpeed) else emptyList()
     }
     val lines = if (followsPlain) plainLines else syncedLines
     val isTimed = (followsPlain || vm.lyricsMode == LyricsMode.SYNCED) && lines.isNotEmpty() && !vm.isLyricsLoading
@@ -84,7 +84,7 @@ internal fun FloatingLyricChip(vm: PlayerViewModel, modifier: Modifier = Modifie
         // The smooth state feeds two derived things only: the active index (recomputed per frame,
         // but observed only when the line actually changes) and the fill (read in its draw phase).
         // Reading it as a value here, as this used to, recomposed the whole chip at 60 fps.
-        val positionState = rememberSmoothPosition({ vm.currentPosition }, vm.isPlaying, vm.effectsState.speed)
+        val positionState = rememberSmoothPosition({ vm.uiCurrentPosition }, vm.uiIsPlaying, vm.effectsState.speed)
         val lyricsOffset = if (followsPlain) 0L else vm.lyricsOffset
         val activeIndex by remember(lines, lyricsOffset) {
             derivedStateOf { LyricsUtils.activeLineIndex(lines, (positionState.value + lyricsOffset).toLong()) }
@@ -123,9 +123,8 @@ internal fun FloatingLyricChip(vm: PlayerViewModel, modifier: Modifier = Modifie
                             modifier = Modifier.size(16.dp),
                         )
                     } else {
-                        // A line timed only as a whole gets the words spread across it, so it fills in as smoothly as one
-                        // timed word by word; the next line's start is where it ends when it has no end of its own.
-                        SungLine(vm, line.withEvenWords(lines.getOrNull(index + 1)?.startTime), { positionState.value + lyricsOffset }, isEven = line.words.isEmpty())
+                        // Line-only timings use the full lyrics page's quick reveal; genuine word timings stay intact.
+                        SungLine(vm, line.withRevealedWords(lines.getOrNull(index + 1)?.startTime), { positionState.value + lyricsOffset }, isGenerated = line.words.isEmpty())
                     }
                 }
             }
@@ -133,22 +132,8 @@ internal fun FloatingLyricChip(vm: PlayerViewModel, modifier: Modifier = Modifie
     }
 }
 
-/** Untimed [text] as lines laid on a timeline at the full screen's scroll pace; blank lines become breaks. */
-private fun pacedPlainLines(text: String, speed: Float): List<LyricLine> {
-    val lineMs = (1000f / (LyricsScrolling.PLAIN_BASE_LINES_PER_SEC * speed.coerceAtLeast(0.1f))).toLong().coerceAtLeast(400L)
-    return text.split("\n").mapIndexed { index, raw ->
-        val line = raw.trim()
-        LyricLine(
-            text = line,
-            startTime = index * lineMs,
-            endTime = (index + 1) * lineMs,
-            isInstrumental = line.isEmpty(),
-        )
-    }
-}
-
 @Composable
-private fun SungLine(vm: PlayerViewModel, line: LyricLine, position: () -> Float, isEven: Boolean) {
+private fun SungLine(vm: PlayerViewModel, line: LyricLine, position: () -> Float, isGenerated: Boolean) {
     val scheme = MaterialTheme.colorScheme
     val main = remember(line) { separateBackingVocals(line).first }
     val style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
@@ -156,10 +141,9 @@ private fun SungLine(vm: PlayerViewModel, line: LyricLine, position: () -> Float
         line = main,
         isActive = true,
         positionMs = position,
-        // Words spread evenly over a line are only worth showing as a smooth fill: coloured a word at a time on a
-        // guess, they would jump.
-        wordSync = vm.isWordSyncEnabled || isEven,
-        fillEffect = vm.isAppleMusicEffectEnabled || isEven,
+        // The generated arrival wave always fills smoothly, including a one-word line.
+        wordSync = vm.isWordSyncEnabled || isGenerated,
+        fillEffect = vm.isAppleMusicEffectEnabled || isGenerated,
         activeStyle = style,
         inactiveStyle = style,
         activeColor = scheme.onSurface,

@@ -1,6 +1,11 @@
 package com.alananasss.kittytune.data.together
 
 import com.alananasss.kittytune.utils.Logger
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,9 +37,21 @@ internal class TogetherRelay(private val clientId: String) {
 
     private val codesByTopic = java.util.concurrent.ConcurrentHashMap<String, String>()
     private var client: MqttAsyncClient? = null
+    @Volatile private var enabled = true
+    private val outgoing = Channel<Pair<String, TogetherMessage>>(128)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    init {
+        scope.launch {
+            for ((code, message) in outgoing) {
+                if (enabled) publish(code, message)
+            }
+        }
+    }
 
     @Synchronized
     fun ensureConnected() {
+        if (!enabled) return
         if (client?.isConnected == true) return
         for (broker in BROKERS) {
             val attempt = runCatching { connect(broker) }
@@ -70,12 +87,22 @@ internal class TogetherRelay(private val clientId: String) {
             connectionTimeout = 10
             keepAliveInterval = 30
         }
-        mqtt.connect(options).waitForCompletion(CONNECT_TIMEOUT_MS)
+        try {
+            mqtt.connect(options).waitForCompletion(CONNECT_TIMEOUT_MS)
+        } catch (error: Exception) {
+            runCatching { mqtt.close(true) }
+            throw error
+        }
+        client?.let { previous ->
+            runCatching { previous.disconnectForcibly() }
+            runCatching { previous.close(true) }
+        }
         client = mqtt
         _isConnected.value = true
     }
 
     fun follow(code: String) {
+        enabled = true
         val topic = TogetherWire.topicFor(code)
         codesByTopic[topic] = TogetherWire.normalizeCode(code)
         ensureConnected()
@@ -89,6 +116,11 @@ internal class TogetherRelay(private val clientId: String) {
     }
 
     fun send(code: String, message: TogetherMessage) {
+        // Keep slow broker connection attempts off Compose/player callbacks, preserving send order.
+        if (outgoing.trySend(code to message).isFailure) Logger.w("TogetherRelay", "Outgoing queue is full")
+    }
+
+    private fun publish(code: String, message: TogetherMessage) {
         ensureConnected()
         val mqtt = client ?: return
         runCatching {
@@ -96,7 +128,10 @@ internal class TogetherRelay(private val clientId: String) {
         }.onFailure { Logger.w("TogetherRelay", "Send failed: ${it.message}") }
     }
 
+    @Synchronized
     fun close() {
+        enabled = false
+        while (outgoing.tryReceive().isSuccess) { /* discard messages from the previous session */ }
         runCatching { client?.disconnect()?.waitForCompletion(2_000) }
         runCatching { client?.close() }
         client = null

@@ -48,12 +48,15 @@ fun MonthlyListenersText(
 ) {
     val listeners = rememberArtistProfile(artistName)?.monthlyListeners
     AnimatedVisibility(visible = listeners != null, enter = fadeIn() + expandVertically(), modifier = modifier) {
-        Text(
-            text = listeners?.let(::monthlyListenersLabel).orEmpty(),
-            style = style,
-            color = color,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        val label = listeners?.let { "Spotify · ${monthlyListenersLabel(it)}" }.orEmpty()
+        Tip(label) {
+            Text(
+                text = label,
+                style = style,
+                color = color,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }

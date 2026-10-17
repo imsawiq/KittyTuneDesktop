@@ -111,6 +111,7 @@ internal fun TrackInfoHeader(
             TitleAndArtist(vm, track, isSpotifyTrack, isLarge = true)
         }
 
+        TrackAudioQualityBadge(vm, track)
         if (isSpotifyTrack) SpotifyStats(track) else SoundCloudStats(vm, track, onCommentsClick)
     }
 }
@@ -155,10 +156,37 @@ private fun TitleAndArtist(
         }
         // The lead artist's monthly listeners, for a sense of who this is.
         com.alananasss.kittytune.ui.common.MonthlyListenersText(
-            artistName = remember(track.id) { com.alananasss.kittytune.data.lyrics.GeniusVoices.splitNames(track.displayArtist).firstOrNull() },
+            artistName = com.alananasss.kittytune.data.artist.listenerLookupArtist(track, str("unknown_artist")),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/** Show quality only after a real stream format or a local file signature is known. */
+@Composable
+private fun TrackAudioQualityBadge(vm: PlayerViewModel, track: Track) {
+    val storage by com.alananasss.kittytune.data.DownloadManager.storageTrigger.collectAsState()
+    val localFlac by androidx.compose.runtime.produceState(false, track.id, storage) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val file = com.alananasss.kittytune.data.DownloadManager.getLocalTrack(track.id)?.localAudioPath
+                ?.takeIf(String::isNotBlank)?.let { java.io.File(it) }
+            file != null && com.alananasss.kittytune.data.download.DownloadAudioFormat.sniff(file) ==
+                com.alananasss.kittytune.data.download.DownloadAudioFormat.FLAC
+        }
+    }
+    val streamMime = remember(track.id, vm.uiCurrentTrack?.id, vm.uiIsPlaying, vm.uiIsLoading) {
+        if (vm.uiCurrentTrack?.id == track.id) com.alananasss.kittytune.data.StreamResolver.cachedMimeType(track.id) else null
+    }
+    val streamFlac = com.alananasss.kittytune.data.download.DownloadAudioFormat.fromMime(streamMime) ==
+        com.alananasss.kittytune.data.download.DownloadAudioFormat.FLAC
+    if (!localFlac && !streamFlac) return
+    com.alananasss.kittytune.ui.common.Tip(str(if (localFlac) "audio_quality_local_flac" else "audio_quality_stream_flac")) {
+        Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
+            Text("FLAC", style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+        }
     }
 }
 

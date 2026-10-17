@@ -122,11 +122,12 @@ data class SpotifyAlbum(
             trackCount = totalTracks.takeIf { it > 0 } ?: tracks.size,
             user = User(
                 id = abs(artists.firstOrNull()?.id?.hashCode()?.toLong() ?: 0L),
-                username = formattedSubtitle,
+                username = artistName,
                 avatarUrl = artworkUrl
             ),
             tracks = tracks.map { it.toTrack() },
             isAlbum = true,
+            setType = releaseType?.lowercase(java.util.Locale.ROOT),
             releaseDate = releaseDate,
             permalink = id,
             permalinkUrl = "https://open.spotify.com/album/$id",

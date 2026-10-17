@@ -175,7 +175,21 @@ class ArtworkOptimizationTest {
             artworkUrl = null,
             user = null
         )
-        assertEquals("https://picsum.photos/200", emptyTrack.thumbnailUrl)
+        assertEquals("", emptyTrack.thumbnailUrl)
+        assertEquals("", emptyTrack.fullResArtwork)
+    }
+
+    @Test
+    fun missingAndLegacyPlaceholderArtworkNeverRequestsRandomPhotos() {
+        val missing = createTrack(42L, "Missing", "")
+        assertEquals("", missing.fullResArtwork)
+        assertEquals("", missing.thumbnailUrl)
+        val legacy = createTrack(43L, "Legacy", "https://picsum.photos/200")
+        assertEquals("", legacy.fullResArtwork)
+        assertEquals("", legacy.thumbnailUrl)
+        val playlist = Playlist(id = 44L, title = "No art", artworkUrl = null, calculatedArtworkUrl = null, trackCount = 0, tracks = emptyList(), user = null)
+        assertEquals("", playlist.fullResArtwork)
+        assertEquals("", playlist.thumbnailUrl)
     }
 
     @Test

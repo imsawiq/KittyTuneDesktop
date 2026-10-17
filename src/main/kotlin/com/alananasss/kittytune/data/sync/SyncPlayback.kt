@@ -16,6 +16,8 @@ data class PlaybackSnapshot(
     val shuffleEnabled: Boolean,
     val repeatMode: String,
     val volume: Float? = null,
+    val pendingRepeatTrackId: Long? = null,
+    val pendingRepeatTrackSource: String? = null,
 ) {
     fun projectedPosition(nowMs: Long): Long {
         val elapsed = if (isPlaying) (nowMs - updatedAtMs).coerceAtLeast(0L) else 0L

@@ -497,8 +497,8 @@
 
         val fullResArtwork: String
             get() {
-                if (artworkUrl != null) return artworkUrl.replace("large", "t500x500")
-                return user?.avatarUrl.getHighResAvatarUrl() ?: "https://picsum.photos/200"
+                if (!artworkUrl.isNullOrBlank() && !artworkUrl.contains("picsum.photos")) return artworkUrl.replace("large", "t500x500")
+                return user?.avatarUrl.getHighResAvatarUrl() ?: ""
             }
 
         val thumbnailUrl: String
@@ -510,7 +510,8 @@
     }
 
     fun resolveThumbnailUrl(rawUrl: String?): String {
-        val base = rawUrl?.takeIf { it.isNotBlank() } ?: return "https://picsum.photos/200"
+        val base = rawUrl?.takeIf { it.isNotBlank() } ?: return ""
+        if (base.contains("picsum.photos")) return ""
         if (base.startsWith("/") || base.startsWith("file://") || base.startsWith("content://")) {
             return base
         }
@@ -593,8 +594,8 @@
         val isTrackStation: Boolean get() = (urn ?: permalinkUrl ?: id ?: "").contains("track-stations")
         val fullResArtwork: String
             get() {
-                if (!artworkUrl.isNullOrEmpty()) return artworkUrl.replace("large", "t500x500")
-                if (!calculatedArtworkUrl.isNullOrEmpty()) return calculatedArtworkUrl.replace("large", "t500x500")
+                if (!artworkUrl.isNullOrBlank() && !artworkUrl.contains("picsum.photos")) return artworkUrl.replace("large", "t500x500")
+                if (!calculatedArtworkUrl.isNullOrBlank() && !calculatedArtworkUrl.contains("picsum.photos")) return calculatedArtworkUrl.replace("large", "t500x500")
                 // First track that actually has a cover, not blindly tracks[0] — its artwork can
                 // itself be a placeholder or an avatar.
                 tracks?.firstOrNull { usablePlaylistCover(it.fullResArtwork) }
@@ -603,7 +604,7 @@
                 // that step is why an uncovered playlist showed the user's face in the library
                 // grid while opening it revealed the real first-track cover. Every code path that
                 // built a Playlist had to remember to blank the avatar to avoid it; now none has to.
-                return "https://picsum.photos/200"
+                return ""
             }
 
         val thumbnailUrl: String
@@ -721,7 +722,7 @@
         /**
          * The cover we actually have, or null when all we hold is a placeholder.
          *
-         * Unlike [fullResArtwork] this never invents one: no random picsum image (which
+         * Like [fullResArtwork], this never invents a random image (the former picsum fallback, which
          * Coil caches per URL, so every coverless playlist ended up showing the very same
          * photo), and every candidate goes through [usablePlaylistCover] — including
          * artworkUrl and calculatedArtworkUrl, which SoundCloud happily fills with the
@@ -743,8 +744,8 @@
 
         val fullResArtwork: String
             get() {
-                if (!artworkUrl.isNullOrEmpty()) return artworkUrl.replace("large", "t500x500")
-                if (!calculatedArtworkUrl.isNullOrEmpty()) return calculatedArtworkUrl.replace("large", "t500x500")
+                if (!artworkUrl.isNullOrBlank() && !artworkUrl.contains("picsum.photos")) return artworkUrl.replace("large", "t500x500")
+                if (!calculatedArtworkUrl.isNullOrBlank() && !calculatedArtworkUrl.contains("picsum.photos")) return calculatedArtworkUrl.replace("large", "t500x500")
                 // First track that actually has a cover, not blindly tracks[0] — its artwork can
                 // itself be a placeholder or an avatar.
                 tracks?.firstOrNull { usablePlaylistCover(it.fullResArtwork) }
@@ -753,7 +754,7 @@
                 // that step is why an uncovered playlist showed the user's face in the library
                 // grid while opening it revealed the real first-track cover. Every code path that
                 // built a Playlist had to remember to blank the avatar to avoid it; now none has to.
-                return "https://picsum.photos/200"
+                return ""
             }
 
         val thumbnailUrl: String

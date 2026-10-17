@@ -138,6 +138,15 @@ class ConnectLanServerTest {
         assertFalse(rejected.ok)
         assertTrue(rejected.error.contains("Track changed"))
         assertEquals("A stale command must not reach the renderer", 1, calls.get())
+
+        val staleQueueId = UUID.randomUUID().toString()
+        socket.send(ConnectWire.seal(credentials, ConnectMessage(kind = "command", sender = peer.deviceId,
+            session = session, sequence = 4, replyTo = hello.challenge, id = staleQueueId,
+            action = "move_next", queueVersion = "stale-queue-version", value = 0)))
+        val queueRejected = receiver.awaitFrame("ack", staleQueueId)
+        assertFalse(queueRejected.ok)
+        assertTrue(queueRejected.error.contains("Queue changed"))
+        assertEquals("A stale occurrence move must not reach the renderer", 1, calls.get())
     }
 
     @Test(timeout = 15_000) fun invalidPairingTokenIsClosedBeforeStateIsExposed() = runBlocking {

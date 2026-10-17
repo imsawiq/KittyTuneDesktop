@@ -239,6 +239,7 @@ private fun HoursCard(report: ListeningReport, modifier: Modifier) {
     var hovered by remember { mutableStateOf<Int?>(null) }
     val subtitle = hovered?.let { "${hourLabel(it)}–${hourLabel((it + 1) % 24)} · ${formatDuration(report.hours[it])}" }
         ?: report.peakHour?.let { str("listening_stats_peak_hour", hourLabel(it)) }
+        ?: "\u00A0" // Reserve the subtitle line before the first hover, even for an empty report.
     StatsCard(title = str("listening_stats_hours"), subtitle = subtitle, modifier = modifier) {
         BarChart(
             values = report.hours,

@@ -15,6 +15,13 @@ class UpdateDownloadPolicyTest {
         }
     }
 
+    @Test fun `malformed partial ranges are rejected before appending`() {
+        for (range in listOf("bytes 1200-1000/3000", "bytes 1200-2999/2000", "bytes 1200-2999/**", "bytes 1200-2999/99999999999999999999999")) {
+            assertFailsWith<IllegalArgumentException> { UpdateDownloadPolicy.resumeOffset(1200, 206, range) }
+        }
+        assertEquals(1200, UpdateDownloadPolicy.resumeOffset(1200, 206, "bytes 1200-2999/*"))
+    }
+
     @Test fun `truncated or empty installers cannot be installed`() {
         assertFailsWith<IllegalArgumentException> { UpdateDownloadPolicy.requireComplete(999, 1000) }
         assertFailsWith<IllegalArgumentException> { UpdateDownloadPolicy.requireComplete(0, -1) }

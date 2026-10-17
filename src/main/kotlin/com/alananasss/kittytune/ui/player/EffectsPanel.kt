@@ -87,8 +87,15 @@ private fun AudioFxDefinition.tooltip(): String {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun EffectsPanel(viewModel: PlayerViewModel, modifier: Modifier = Modifier) {
-    val isPrecise = viewModel.isPreciseSpeedEnabled
+fun EffectsPanel(
+    viewModel: PlayerViewModel,
+    modifier: Modifier = Modifier,
+    catalogOnly: Boolean = false,
+    onOpenCatalog: (() -> Unit)? = null,
+    onCloseCatalog: () -> Unit = {},
+    catalogDrag: EffectCatalogDragState? = null,
+) {
+    var draggingPinnedEffect by remember { mutableStateOf(false) }
 
     var showBassBoostDialog by remember { mutableStateOf(false) }
     var showEarrapeDialog by remember { mutableStateOf(false) }
@@ -449,17 +456,18 @@ fun EffectsPanel(viewModel: PlayerViewModel, modifier: Modifier = Modifier) {
         viewModel.pinnedAudioFx.mapNotNull { id -> allEffects.find { it.id == id } }
     }
 
-    if (showStudioEditSheet) {
+    if (catalogOnly || showStudioEditSheet) {
         AudioFxStudioSheet(
             viewModel = viewModel,
             allEffects = allEffects,
-            onDismiss = { showStudioEditSheet = false }
+            catalogDrag = catalogDrag,
+            onDismiss = { if (catalogOnly) onCloseCatalog() else showStudioEditSheet = false }
         )
     } else {
         Column(
             modifier = modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(rememberScrollState(), enabled = !draggingPinnedEffect)
                 .padding(horizontal = 24.dp)
                 .padding(bottom = 24.dp)
         ) {
@@ -499,7 +507,7 @@ fun EffectsPanel(viewModel: PlayerViewModel, modifier: Modifier = Modifier) {
                     }
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = str("audio_fx_long_press_hint"),
+                        text = str("audio_fx_reorder_hint"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
                     )
@@ -523,37 +531,31 @@ fun EffectsPanel(viewModel: PlayerViewModel, modifier: Modifier = Modifier) {
                 // Every pinned effect at once, in the panel's own scroll. They used to be split into pages of
                 // six, which on a full screen meant flipping pages with half the screen empty below, and in a
                 // window meant two ways of moving through one list (issue #66).
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    pinnedTiles.chunked(2).forEach { rowItems ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            rowItems.forEach { fx ->
-                                FxTile(
-                                    label = str(fx.titleKey),
-                                    icon = fx.icon,
-                                    isActive = fx.isActive(viewModel.effectsState),
-                                    onClick = { fx.onToggle(viewModel) { showEarrapeWarning = true } },
-                                    onLongClick = fx.onOpenDialog,
-                                    onSecondaryClick = fx.onSecondaryClick?.let { { it(viewModel) } },
-                                    modifier = if (rowItems.size == 1) Modifier.fillMaxWidth() else Modifier.weight(1f),
-                                    isDanger = fx.isDanger,
-                                    tooltip = fx.tooltip(),
-                                )
-                            }
-                        }
-                    }
-                }
+                DraggablePinnedTilesGrid(
+                    pinnedList = viewModel.pinnedAudioFx,
+                    allEffects = allEffects,
+                    viewModel = viewModel,
+                    onDragStateChanged = { draggingPinnedEffect = it },
+                    onRemoveFx = viewModel::togglePinAudioFx,
+                    tileContent = { fx ->
+                        FxTile(
+                            label = str(fx.titleKey),
+                            icon = fx.icon,
+                            isActive = fx.isActive(viewModel.effectsState),
+                            onClick = { fx.onToggle(viewModel) { showEarrapeWarning = true } },
+                            onSecondaryClick = fx.onSecondaryClick?.let { { it(viewModel) } } ?: fx.onOpenDialog,
+                            modifier = Modifier.fillMaxSize(),
+                            isDanger = fx.isDanger,
+                            tooltip = fx.tooltip(),
+                        )
+                    },
+                )
             }
 
             Spacer(Modifier.height(14.dp))
 
             FilledTonalButton(
-                onClick = { showStudioEditSheet = true },
+                onClick = { onOpenCatalog?.invoke() ?: run { showStudioEditSheet = true } },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
@@ -947,9 +949,12 @@ private fun formatSpeed(value: Float): String {
 fun AudioFxStudioSheet(
     viewModel: PlayerViewModel,
     allEffects: List<AudioFxDefinition>,
+    catalogDrag: EffectCatalogDragState? = null,
     onDismiss: () -> Unit
 ) {
     val scrollState = rememberScrollState()
+    var draggingPinnedEffect by remember { mutableStateOf(false) }
+    com.alananasss.kittytune.core.BackHandler(onBack = onDismiss)
 
     val categories = remember(allEffects) {
         listOf(
@@ -967,7 +972,7 @@ fun AudioFxStudioSheet(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(scrollState)
+            .verticalScroll(scrollState, enabled = !draggingPinnedEffect && catalogDrag?.draggedId == null)
             .padding(horizontal = 24.dp)
             .padding(top = 8.dp, bottom = 36.dp)
     ) {
@@ -1051,6 +1056,7 @@ fun AudioFxStudioSheet(
                     pinnedList = viewModel.pinnedAudioFx,
                     allEffects = allEffects,
                     viewModel = viewModel,
+                    onDragStateChanged = { draggingPinnedEffect = it },
                     onRemoveFx = { fxId ->
                         viewModel.togglePinAudioFx(fxId)
                     }
@@ -1067,6 +1073,7 @@ fun AudioFxStudioSheet(
                     categoryIcon = catIcon,
                     effects = fxList,
                     viewModel = viewModel,
+                    catalogDrag = catalogDrag,
                     onToggleFx = { fxId -> viewModel.togglePinAudioFx(fxId) }
                 )
             }
@@ -1074,166 +1081,6 @@ fun AudioFxStudioSheet(
     }
 }
 
-@Composable
-fun DraggablePinnedTilesGrid(
-    pinnedList: List<String>,
-    allEffects: List<AudioFxDefinition>,
-    viewModel: PlayerViewModel,
-    onDragStateChanged: (Boolean) -> Unit = {},
-    onRemoveFx: (String) -> Unit
-) {
-    val density = LocalDensity.current
-
-    var currentOrder by remember(pinnedList) { mutableStateOf(pinnedList) }
-    var draggedId by remember { mutableStateOf<String?>(null) }
-    var dragTouchOffsetInItem by remember { mutableStateOf(Offset.Zero) }
-    var currentFingerPos by remember { mutableStateOf(Offset.Zero) }
-
-    LaunchedEffect(draggedId) {
-        onDragStateChanged(draggedId != null)
-    }
-
-    val pinnedDefs = remember(currentOrder, allEffects) {
-        currentOrder.mapNotNull { id -> allEffects.find { it.id == id } }
-    }
-
-    if (pinnedDefs.isEmpty()) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 24.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = str("edit_tiles_subtitle"),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        return
-    }
-
-    val spacingDp = 10.dp
-    val itemHeightDp = 76.dp
-
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val totalWidthPx = constraints.maxWidth.toFloat()
-        val spacingPx = with(density) { spacingDp.toPx() }
-        val itemHeightPx = with(density) { itemHeightDp.toPx() }
-        val itemWidthPx = (totalWidthPx - spacingPx) / 2f
-        val itemWidthDp = with(density) { itemWidthPx.toDp() }
-
-        val totalRows = (currentOrder.size + 1) / 2
-        val totalHeightDp = if (totalRows == 0) 0.dp else (itemHeightDp * totalRows + spacingDp * (totalRows - 1))
-
-        Box(modifier = Modifier.fillMaxWidth().height(totalHeightDp)) {
-            pinnedDefs.forEach { fx ->
-                val index = currentOrder.indexOf(fx.id)
-                if (index == -1) return@forEach
-
-                val isDragging = draggedId == fx.id
-
-                val slotCol = index % 2
-                val slotRow = index / 2
-                val slotXPx = slotCol * (itemWidthPx + spacingPx)
-                val slotYPx = slotRow * (itemHeightPx + spacingPx)
-
-                val targetXPx = if (isDragging) (currentFingerPos.x - dragTouchOffsetInItem.x) else slotXPx
-                val targetYPx = if (isDragging) (currentFingerPos.y - dragTouchOffsetInItem.y) else slotYPx
-
-                val animatedXPx by animateFloatAsState(
-                    targetValue = targetXPx,
-                    animationSpec = if (isDragging) snap() else spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
-                    label = "itemX_${fx.id}"
-                )
-                val animatedYPx by animateFloatAsState(
-                    targetValue = targetYPx,
-                    animationSpec = if (isDragging) snap() else spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
-                    label = "itemY_${fx.id}"
-                )
-
-                val scale by animateFloatAsState(
-                    targetValue = if (isDragging) 1.08f else 1f,
-                    animationSpec = spring(dampingRatio = Spring.DampingRatioHighBouncy),
-                    label = "itemScale_${fx.id}"
-                )
-                val zIndex = if (isDragging) 100f else 1f
-
-                Box(
-                    modifier = Modifier
-                        .offset { IntOffset(animatedXPx.roundToInt(), animatedYPx.roundToInt()) }
-                        .width(itemWidthDp)
-                        .height(itemHeightDp)
-                        .zIndex(zIndex)
-                        .graphicsLayer {
-                            scaleX = scale
-                            scaleY = scale
-                            shadowElevation = if (isDragging) 16.dp.toPx() else 0f
-                            shape = RoundedCornerShape(22.dp)
-                            clip = false
-                        }
-                        .pointerInput(Unit) {
-                            detectDragGesturesAfterLongPress(
-                                onDragStart = { offsetInItem ->
-                                    val curIdx = currentOrder.indexOf(fx.id)
-                                    if (curIdx != -1) {
-                                        val col = curIdx % 2
-                                        val row = curIdx / 2
-                                        val itemOriginX = col * (itemWidthPx + spacingPx)
-                                        val itemOriginY = row * (itemHeightPx + spacingPx)
-
-                                        draggedId = fx.id
-                                        dragTouchOffsetInItem = offsetInItem
-                                        currentFingerPos = Offset(itemOriginX + offsetInItem.x, itemOriginY + offsetInItem.y)
-                                    }
-                                },
-                                onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    if (draggedId == fx.id) {
-                                        currentFingerPos += dragAmount
-
-                                        val hoveredCol = if (currentFingerPos.x > totalWidthPx / 2f) 1 else 0
-                                        val maxRow = (currentOrder.size - 1) / 2
-                                        val hoveredRow = (currentFingerPos.y / (itemHeightPx + spacingPx)).toInt().coerceIn(0, maxRow)
-                                        val targetIdx = (hoveredRow * 2 + hoveredCol).coerceIn(0, currentOrder.lastIndex)
-
-                                        val curIdx = currentOrder.indexOf(fx.id)
-                                        if (curIdx != -1 && targetIdx != curIdx) {
-                                            val updated = currentOrder.toMutableList().apply {
-                                                removeAt(curIdx)
-                                                add(targetIdx, fx.id)
-                                            }
-                                            currentOrder = updated
-                                        }
-                                    }
-                                },
-                                onDragEnd = {
-                                    if (draggedId == fx.id) {
-                                        viewModel.updatePinnedAudioFx(currentOrder)
-                                        draggedId = null
-                                    }
-                                },
-                                onDragCancel = {
-                                    if (draggedId == fx.id) {
-                                        viewModel.updatePinnedAudioFx(currentOrder)
-                                        draggedId = null
-                                    }
-                                }
-                            )
-                        }
-                ) {
-                    ActiveQSTile(
-                        fx = fx,
-                        isActive = fx.isActive(viewModel.effectsState),
-                        onRemove = { onRemoveFx(fx.id) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-// ── ActiveQSTile (Matching Android ActiveQSTile) ──
 @Composable
 fun ActiveQSTile(
     fx: AudioFxDefinition,
@@ -1328,6 +1175,7 @@ fun AvailableCategorySection(
     categoryIcon: ImageVector,
     effects: List<AudioFxDefinition>,
     viewModel: PlayerViewModel,
+    catalogDrag: EffectCatalogDragState? = null,
     onToggleFx: (String) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
@@ -1365,7 +1213,12 @@ fun AvailableCategorySection(
                             fx = fx,
                             isPinned = isPinned,
                             onClick = { onToggleFx(fx.id) },
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f).dragCatalogEffect(
+                                state = catalogDrag,
+                                id = fx.id,
+                                enabled = !isPinned,
+                                onDrop = { if (!viewModel.isAudioFxPinned(fx.id)) onToggleFx(fx.id) },
+                            )
                         )
                     }
                     if (rowItems.size == 1) {

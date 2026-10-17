@@ -419,14 +419,16 @@ object ConnectManager {
         }
     }
 
-    fun command(peerId: String, action: String, value: Long = 0, state: PlaybackSnapshot? = null, value2: Long = 0) {
+    fun command(peerId: String, action: String, value: Long = 0, state: PlaybackSnapshot? = null, value2: Long = 0,
+                expectedQueueVersion: String? = null) {
         scope.launch {
             _feedback.value = ""
-            val result = runCatching { executeRemote(peerId, action, value, state, value2) }
+            val result = runCatching { executeRemote(peerId, action, value, state, value2, expectedQueueVersion) }
             _feedback.value = result.exceptionOrNull()?.message ?: "✓"
         }
     }
-    private suspend fun executeRemote(peerId: String, action: String, value: Long = 0, state: PlaybackSnapshot? = null, value2: Long = 0) {
+    private suspend fun executeRemote(peerId: String, action: String, value: Long = 0, state: PlaybackSnapshot? = null, value2: Long = 0,
+                                      expectedQueueVersion: String? = null) {
         val link = links[peerId]?.takeIf { _peers.value[peerId]?.connected == true } ?: error("Device is offline")
         val remote = _peers.value[peerId]
         val id = UUID.randomUUID().toString()
@@ -434,7 +436,7 @@ object ConnectManager {
         try {
             link.sendMessage("command", id = id, action = action, value = value, value2 = value2, state = state,
                 trackId = remote?.snapshot?.queue?.getOrNull(remote.snapshot.currentIndex)?.id.takeIf { action == "seek" },
-                queueVersion = remote?.queueVersion.orEmpty().takeIf { action in listOf("queue", "remove", "move") }.orEmpty())
+                queueVersion = connectQueueCommandVersion(action, expectedQueueVersion, remote?.queueVersion.orEmpty()))
             val ack = withTimeout(if (action == "transfer") 30_000L else 8_000L) { deferred.await() }
             check(ack.ok) { ack.error.ifBlank { "Command rejected" } }
         } finally { pending.discard(id, deferred) }

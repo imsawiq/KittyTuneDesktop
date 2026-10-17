@@ -82,7 +82,7 @@ private data class Swatch(val color: Color, val tracks: List<Track>)
  */
 @Composable
 internal fun LikesAura(likes: List<Track>, playerViewModel: PlayerViewModel, modifier: Modifier = Modifier) {
-    val sample = remember(likes.size) { likes.take(SAMPLE_SIZE) }
+    val sample = likes.take(SAMPLE_SIZE)
     val swatches by produceState<List<Swatch>>(initialValue = emptyList(), sample) {
         value = withContext(Dispatchers.IO) { swatchesOf(sample) }
     }
@@ -91,7 +91,7 @@ internal fun LikesAura(likes: List<Track>, playerViewModel: PlayerViewModel, mod
         AuraPalette.of(swatches.map { it.color to it.tracks.size }, listOf(scheme.primary, scheme.tertiary, scheme.secondary))
     }
     // Lit by listening to the liked songs, that is, playing from this very list, not by any song that happens to be liked.
-    val isLikedPlaying = playerViewModel.isPlaying && playerViewModel.currentContext?.navigationId == "likes"
+    val isLikedPlaying = playerViewModel.uiIsPlaying && playerViewModel.uiCurrentContext?.navigationId == "likes"
     // A song ending, a skip or a buffering pause drops "playing" for a moment; waiting a little before letting go keeps the
     // colour from pulsing out and back in at every change of track.
     val lit by produceState(isLikedPlaying, isLikedPlaying) {
@@ -133,7 +133,7 @@ internal fun AuraCanvas(palette: AuraPalette, intensity: Float, drift: Float, mo
         val w = size.width
         val h = size.height
         // The mix, as a quiet wash from the very top.
-        drawRect(Brush.verticalGradient(listOf(palette.mix.copy(alpha = 0.20f * intensity), Color.Transparent)))
+        drawRect(Brush.verticalGradient(listOf(palette.mix.copy(alpha = 0.055f * intensity), Color.Transparent)))
         palette.colors.forEachIndexed { i, color ->
             val turns = AURA_TURNS[i % AURA_TURNS.size]
             val angle = drift * turns + i * 2.1f
@@ -144,7 +144,7 @@ internal fun AuraCanvas(palette: AuraPalette, intensity: Float, drift: Float, mo
             // A slow swell on each, so the colour breathes as well as moves.
             val swell = 0.88f + 0.12f * sin(drift * 2f + i)
             val radius = w * 0.75f
-            val a = 0.30f * swell * intensity
+            val a = 0.075f * swell * intensity
             // A bell-shaped falloff (many stops, each the Gaussian's value), so there is no rim anywhere to tell the blob
             // from the page: with the three stops it had, each colour read as a circle laid on the screen.
             drawCircle(
@@ -171,7 +171,7 @@ internal class AuraPalette(val colors: List<Color>, val mix: Color) {
     companion object {
         /**
          * @param covers the covers' colours with how many songs each stands for.
-         * @param theme the theme's accents, which each cover colour is drawn a third of the way toward.
+         * @param theme the theme's accents, which softly harmonise the covers without replacing their colours.
          */
         fun of(covers: List<Pair<Color, Int>>, theme: List<Color>): AuraPalette {
             val fallback = theme.take(3)

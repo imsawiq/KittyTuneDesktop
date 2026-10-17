@@ -1504,18 +1504,26 @@ fun PlaylistDetailScreen(
                         // Action row
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (tracksToDisplay.isNotEmpty()) {
-                                Button(shapes = ButtonDefaults.shapes(), onClick = { playerViewModel.playPlaylist(tracksToDisplay.toList(), 0, playbackContext) },
+                                val isCurrentPlaylist = playbackContext.navigationId == playerViewModel.uiCurrentContext?.navigationId
+                                val isPlaylistPlaying = isCurrentPlaylist && playerViewModel.uiIsPlaying
+                                Button(shapes = ButtonDefaults.shapes(), onClick = {
+                                    if (isCurrentPlaylist) playerViewModel.togglePlayPause()
+                                    else playerViewModel.playPlaylist(tracksToDisplay.toList(), 0, playbackContext)
+                                },
                                     modifier = Modifier.height(44.dp)
                                 ) {
-                                    Icon(Icons.Default.PlayArrow, null)
+                                    androidx.compose.animation.AnimatedContent(isPlaylistPlaying, label = "playlistPlayback") { playing ->
+                                        Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, null)
+                                    }
                                     Spacer(Modifier.width(8.dp))
-                                    Text(str("btn_play"), fontWeight = FontWeight.Bold)
+                                    Text(str(if (isPlaylistPlaying) "mix_playing" else "btn_play"), fontWeight = FontWeight.Bold)
                                 }
                                 Spacer(Modifier.width(8.dp))
-                                FilledTonalButton(shapes = ButtonDefaults.shapes(), onClick = { playerViewModel.playPlaylistShuffled(tracksToDisplay.toList(), context = playbackContext) },
+                                val shuffleInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                                FilledTonalButton(shapes = ButtonDefaults.shapes(), interactionSource = shuffleInteraction, onClick = { playerViewModel.playPlaylistShuffled(tracksToDisplay.toList(), context = playbackContext) },
                                     modifier = Modifier.height(44.dp)
                                 ) {
-                                    Icon(Icons.Default.Shuffle, null)
+                                    com.alananasss.kittytune.ui.common.animation.AnimatedShuffleIcon(interactionSource = shuffleInteraction)
                                     Spacer(Modifier.width(8.dp))
                                     Text(str("btn_shuffle"), fontWeight = FontWeight.Bold)
                                 }

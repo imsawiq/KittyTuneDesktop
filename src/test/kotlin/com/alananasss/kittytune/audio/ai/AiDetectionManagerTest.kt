@@ -61,7 +61,7 @@ class AiDetectionManagerTest {
         }
     }
 
-    private val testModelFile = File("/tmp/test_audio_model.onnx")
+    private val testModelFile get() = File(tempTestDir, "synthetic-audio-model.onnx")
 
     @Before
     fun setup() {
@@ -73,15 +73,7 @@ class AiDetectionManagerTest {
         }
         val targetArtifactNet = File(tempTestDir, "artifactnet_v94_full.onnx")
         if (!targetArtifactNet.exists() || targetArtifactNet.length() < 1_000_000L) {
-            val liveModel = File(File(AppDirs.dataDir, "models"), "artifactnet_v94_full.onnx")
-            val src = File("/home/alan/.gemini/antigravity-ide/brain/3230fab3-2007-4726-8c4f-3045e267c99e/scratch/model/artifactnet_v94_full.onnx")
-            if (liveModel.exists() && liveModel.length() > 1_000_000L) {
-                liveModel.copyTo(targetArtifactNet, overwrite = true)
-            } else if (src.exists()) {
-                src.copyTo(targetArtifactNet, overwrite = true)
-            } else {
-                testModelFile.copyTo(targetArtifactNet, overwrite = true)
-            }
+            testModelFile.copyTo(targetArtifactNet, overwrite = true)
         }
         AiDetectionManager.selectModel(AiModelType.ARTIFACTNET)
         AiDetectionManager.init()
@@ -100,7 +92,7 @@ class AiDetectionManagerTest {
     }
 
     @Test
-    fun inferenceMatchesReference() {
+    fun syntheticOnnxInferenceMatchesAnalyticReference() {
         AiDetectionManager.selectModel(AiModelType.ARTIFACTNET)
         AiDetectionManager.init()
         assertTrue("model should be loaded", AiDetectionManager.isModelLoaded())
@@ -117,9 +109,11 @@ class AiDetectionManagerTest {
         }
         println("P(AI) sine440 = ${result.score}")
         assertTrue("score in range", result.score in 0f..1f)
-        // Reference from LiteRT Python on the same int16-quantized signal: 0.2789
-        // (XNNPACK multithreading adds run-to-run jitter, hence the wide tolerance).
-        assertEquals(0.2789f, result.score, 0.20f)
+        // The fixture computes Sigmoid(mean(abs(audio_input))). A half-amplitude sine
+        // has mean absolute amplitude 2 * 0.5 / PI; int16 quantization changes only rounding.
+        val meanAbsoluteAmplitude = 1.0 / kotlin.math.PI
+        val expected = (1.0 / (1.0 + kotlin.math.exp(-meanAbsoluteAmplitude))).toFloat()
+        assertEquals(expected, result.score, 0.001f)
     }
 
     @Test

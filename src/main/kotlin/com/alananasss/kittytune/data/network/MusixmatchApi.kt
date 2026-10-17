@@ -267,16 +267,15 @@ object MusixmatchClient {
     suspend fun getLyricsData(trackId: Long, durationMs: Long, targetLang: String? = null, wantsRomanization: Boolean = false): Pair<List<LyricLine>, String?> = withContext(Dispatchers.IO) {
         var token = getValidToken()
 
-        var subtitleRes = try { api.getSubtitle(trackId = trackId, token = token) } catch (e: Exception) { null }
-
-        if (subtitleRes?.message?.header?.statusCode == 401 && subtitleRes.message.header.hint == "renew") {
+        var responses = com.alananasss.kittytune.data.lyrics.MusixmatchLyricsRequests.fetch(api, trackId, token)
+        if (responses.needsTokenRenewal) {
             Prefs.remove("mxm_user_token")
             token = getValidToken()
-            subtitleRes = try { api.getSubtitle(trackId = trackId, token = token) } catch (e: Exception) { null }
+            responses = com.alananasss.kittytune.data.lyrics.MusixmatchLyricsRequests.fetch(api, trackId, token)
         }
-
-        val richSyncRes = try { api.getRichSync(trackId, token) } catch (e: Exception) { null }
-        val plainRes = try { api.getLyrics(trackId, token) } catch (e: Exception) { null }
+        val subtitleRes = responses.subtitle
+        val richSyncRes = responses.richSync
+        val plainRes = responses.plain
 
         val plainText = plainRes?.message?.body?.lyrics?.lyricsBody?.replace("******* This Lyrics is NOT for Commercial use *******", "")?.trim()
         val subtitleJson = subtitleRes?.message?.body?.subtitle?.subtitleBody
@@ -329,7 +328,7 @@ object MusixmatchClient {
             romanizationMap.putAll(rom)
         }
 
-        val trackRes = try { api.getTrack(trackId = trackId, part = "track_performer_tagging", token = token) } catch (e: Exception) { null }
+        val trackRes = responses.track
         val trackDetail = trackRes?.message?.body?.track
         val performerTagging = trackDetail?.performerTagging
         val parts = performerTagging?.content.orEmpty()

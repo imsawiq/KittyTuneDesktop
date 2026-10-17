@@ -26,6 +26,11 @@ data class Clip(
     val viewCount: Long,
 )
 
+/** One extracted quality; adaptive video carries its separate sound address. */
+data class ClipStream(val url: String, val height: Int, val audioUrl: String? = null) {
+    val label: String get() = if (height > 0) "${height}p" else "Auto"
+}
+
 /**
  * An artist's music videos from YouTube, for watching on their page without leaving the app (tester's list, 5.5).
  *
@@ -71,9 +76,6 @@ object ArtistClips {
     fun setHomeClipsForTesting(clips: List<Clip>) {
         _homeClips.value = clips
     }
-
-    /** Highest muxed resolution asked for; YouTube rarely offers more than 360p with sound in one file. */
-    private const val MAX_HEIGHT = 720
 
     private val cache = object : LinkedHashMap<String, List<Clip>>(CACHE_SIZE, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<Clip>>) = size > CACHE_SIZE
@@ -134,20 +136,36 @@ object ArtistClips {
         }
     }
 
-    /** A playable address for [clip]: one file with picture and sound together. Expires after a few hours. */
-    suspend fun streamUrl(clip: Clip): String? = withContext(Dispatchers.IO) {
+    /** Resolve fresh signed addresses only when playback or a preview needs them. */
+    suspend fun streams(clip: Clip): List<ClipStream> = withContext(Dispatchers.IO) {
         runCatching {
             StreamResolver.init()
             val extractor = ServiceList.YouTube.getStreamExtractor(clip.url)
             extractor.fetchPage()
-            extractor.videoStreams
+            val audio = extractor.audioStreams
                 .filter { it.url != null && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP }
-                .map { it to (it.resolution.substringBefore('p').toIntOrNull() ?: 0) }
-                .filter { (_, height) -> height <= MAX_HEIGHT }
-                .maxByOrNull { (_, height) -> height }
-                ?.first?.url
-        }.onFailure { Logger.w("ArtistClips", "No stream for ${clip.url}: ${it.message}") }.getOrNull()
+                .maxByOrNull { it.averageBitrate }?.url
+            val muxed = extractor.videoStreams
+                .filter { it.url != null && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP }
+                .map { ClipStream(it.url!!, qualityHeight(it.resolution)) }
+            val adaptive = if (audio == null) emptyList() else extractor.videoOnlyStreams
+                .filter { it.url != null && it.deliveryMethod == DeliveryMethod.PROGRESSIVE_HTTP }
+                .map { ClipStream(it.url!!, qualityHeight(it.resolution), audio) }
+            rankStreams(muxed + adaptive)
+        }.onFailure { Logger.w("ArtistClips", "No stream for ${clip.url}: ${it.message}") }.getOrDefault(emptyList())
     }
+
+    suspend fun streamUrl(clip: Clip): String? = streams(clip).firstOrNull { it.audioUrl == null }?.url
+
+    /** Prefer a muxed stream when the same resolution is available without a second connection. */
+    internal fun rankStreams(streams: List<ClipStream>): List<ClipStream> = streams
+        .sortedWith(compareByDescending<ClipStream> { it.height }.thenBy { it.audioUrl != null })
+        .distinctBy { it.height }
+
+    internal fun defaultStream(streams: List<ClipStream>): ClipStream? =
+        streams.firstOrNull { it.height in 1..1080 } ?: streams.firstOrNull()
+
+    internal fun qualityHeight(resolution: String): Int = resolution.substringBefore('p').toIntOrNull() ?: 0
 
     /**
      * The clips among [found], for [names] (the whole name, then each member): one that an artist uploaded, or whose

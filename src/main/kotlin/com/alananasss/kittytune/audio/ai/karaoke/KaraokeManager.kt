@@ -21,6 +21,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -55,12 +56,12 @@ object KaraokeManager {
 
     private const val TAG = "KaraokeManager"
     const val MODEL_FILE_NAME = "htdemucs.safetensors"
-    const val MODEL_TOTAL_BYTES = 84_000_000L // ~84 MB
+    const val MODEL_TOTAL_BYTES = HTDemucsModelIntegrity.SIZE
 
-    const val DOWNLOAD_URL = "https://huggingface.co/nikhilunni/demucs-rs/resolve/main/htdemucs.safetensors"
-    val FALLBACK_URLS = listOf(
-        "https://huggingface.co/nikhilunni/demucs-rs/resolve/main/htdemucs.safetensors",
-    )
+    const val DOWNLOAD_URL = HTDemucsModelIntegrity.URL
+    val FALLBACK_URLS = emptyList<String>()
+    private val modelDownloadCall = java.util.concurrent.atomic.AtomicReference<okhttp3.Call?>(null)
+
 
     sealed class ModelDownloadState {
         data object NotDownloaded : ModelDownloadState()
@@ -275,7 +276,7 @@ object KaraokeManager {
     fun isModelReady(): Boolean {
         if (getOnnxModelFile() != null) return true
         val file = getModelFile()
-        return file.exists() && file.length() > 10_000_000L
+        return file.isFile && file.length() == MODEL_TOTAL_BYTES
     }
 
     /**
@@ -378,95 +379,73 @@ object KaraokeManager {
         return null
     }
 
-    /**
-     * Download Mel-Band RoFormer ONNX model in background with progress.
-     */
+    /** Download the demucs-rs F16 weights without replacing a usable model until verified. */
+    @Synchronized
     fun startModelDownload() {
-        if (_downloadState.value is ModelDownloadState.Downloading || isModelReady()) return
-
-        downloadJob?.cancel()
+        if (downloadJob?.isActive == true || isModelReady()) return
+        _downloadState.value = ModelDownloadState.Downloading(0f, 0L, MODEL_TOTAL_BYTES)
         downloadJob = scope.launch(Dispatchers.IO) {
-            _downloadState.value = ModelDownloadState.Downloading(0f, 0L, MODEL_TOTAL_BYTES)
-
             val modelFinal = getModelFile()
-            modelFinal.parentFile?.mkdirs()
-            val modelTmp = File(modelFinal.parentFile ?: getModelsDir(), "$MODEL_FILE_NAME.tmp")
-            val urlsToTry = listOf(DOWNLOAD_URL) + FALLBACK_URLS
-
-            var downloadSuccess = false
-            var lastError: Exception? = null
-
-            for (url in urlsToTry) {
-                var totalDownloaded = 0L
-                try {
-                    val client = ProxyManager.getOkHttpClient().newBuilder()
-                        .connectTimeout(30, TimeUnit.SECONDS)
-                        .readTimeout(120, TimeUnit.SECONDS)
-                        .followRedirects(true)
-                        .followSslRedirects(true)
-                        .build()
-
-                    val request = Request.Builder()
-                        .url(url)
-                        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                        .build()
-
-                    client.newCall(request).execute().use { response ->
-                        if (!response.isSuccessful) {
-                            throw RuntimeException("HTTP ${response.code} downloading RoFormer model")
-                        }
-                        val body = response.body ?: throw RuntimeException("Empty response body")
-                        val totalBytes = body.contentLength().takeIf { it > 0 } ?: MODEL_TOTAL_BYTES
-
-                        FileOutputStream(modelTmp).use { out ->
-                            val buf = ByteArray(32768)
-                            body.byteStream().use { input ->
-                                while (true) {
-                                    val read = input.read(buf)
-                                    if (read <= 0) break
-                                    out.write(buf, 0, read)
-                                    totalDownloaded += read
-                                    val progress = (totalDownloaded.toFloat() / totalBytes).coerceIn(0f, 1f)
-                                    _downloadState.value = ModelDownloadState.Downloading(progress, totalDownloaded, totalBytes)
-                                }
+            val directory = requireNotNull(modelFinal.parentFile).apply { mkdirs() }
+            val temporary = Files.createTempFile(directory.toPath(), "htdemucs-", ".part").toFile()
+            var call: okhttp3.Call? = null
+            try {
+                val client = ProxyManager.getOkHttpClient().newBuilder()
+                    .connectTimeout(30, TimeUnit.SECONDS)
+                    .readTimeout(120, TimeUnit.SECONDS)
+                    .followRedirects(true).followSslRedirects(true).build()
+                call = client.newCall(Request.Builder().url(DOWNLOAD_URL)
+                    .header("User-Agent", "KittyTuneDesktop").build())
+                modelDownloadCall.set(call)
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                call.execute().use { response ->
+                    require(response.isSuccessful) { "HTTP ${response.code} downloading HTDemucs model" }
+                    val body = response.body
+                    val responseLength = body.contentLength()
+                    require(responseLength < 0 || responseLength == MODEL_TOTAL_BYTES) { "Unexpected HTDemucs model size" }
+                    var downloaded = 0L
+                    temporary.outputStream().buffered().use { output ->
+                        body.byteStream().use { input ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                downloaded += count
+                                require(downloaded <= MODEL_TOTAL_BYTES) { "HTDemucs model exceeds expected size" }
+                                output.write(buffer, 0, count)
+                                _downloadState.value = ModelDownloadState.Downloading(
+                                    downloaded.toFloat() / MODEL_TOTAL_BYTES, downloaded, MODEL_TOTAL_BYTES)
                             }
-                            out.flush()
                         }
                     }
-
-                    if (!modelTmp.exists() || modelTmp.length() < 10_000_000L) {
-                        throw RuntimeException("Downloaded model is incomplete or empty")
-                    }
-
-                    try {
-                        Files.move(modelTmp.toPath(), modelFinal.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-                    } catch (_: Exception) {
-                        Files.move(modelTmp.toPath(), modelFinal.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                    }
-
-                    downloadSuccess = true
-                    _downloadState.value = ModelDownloadState.Ready
-                    break
-                } catch (e: Exception) {
-                    lastError = e
-                    runCatching { modelTmp.delete() }
                 }
-            }
-
-            if (!downloadSuccess) {
-                _downloadState.value = ModelDownloadState.Error(lastError?.message ?: "Download failed")
+                HTDemucsModelIntegrity.requireValid(temporary)
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                try {
+                    Files.move(temporary.toPath(), modelFinal.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+                } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                    Files.move(temporary.toPath(), modelFinal.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                }
+                _downloadState.value = ModelDownloadState.Ready
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                _downloadState.value = ModelDownloadState.Error(error.message ?: "HTDemucs download failed")
+            } finally {
+                modelDownloadCall.compareAndSet(call, null)
+                temporary.delete()
             }
         }
     }
 
+    @Synchronized
     fun cancelModelDownload() {
         downloadJob?.cancel()
+        modelDownloadCall.getAndSet(null)?.cancel()
         downloadJob = null
-        val modelTmp = File(getModelsDir(), "$MODEL_FILE_NAME.tmp")
-        runCatching { modelTmp.delete() }
-        val userHome = System.getProperty("user.home") ?: "/home/alan"
-        runCatching { File(userHome, ".cache/demucs-rs/$MODEL_FILE_NAME.tmp").delete() }
-        checkModelStatus()
+        _downloadState.value = if (isModelReady()) ModelDownloadState.Ready else ModelDownloadState.NotDownloaded
     }
 
     fun deleteModel() {

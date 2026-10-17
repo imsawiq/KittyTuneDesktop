@@ -44,7 +44,6 @@ import com.alananasss.kittytune.data.local.AppLanguage
 import com.alananasss.kittytune.data.local.AppThemeMode
 import com.alananasss.kittytune.data.local.PlayerPreferences
 import com.alananasss.kittytune.data.theme.End4ThemeManager
-import com.alananasss.kittytune.ui.profile.DiscordLoginScreen
 import kotlinx.coroutines.launch
 import androidx.compose.material3.IconButtonDefaults
 
@@ -129,16 +128,6 @@ fun SetupScreen(onSetupComplete: () -> Unit) {
     val prefs = remember { PlayerPreferences() }
     val coroutineScope = rememberCoroutineScope()
     
-    var showDiscordLogin by remember { mutableStateOf(false) }
-    
-    if (showDiscordLogin) {
-        DiscordLoginScreen(
-            onBackClick = { showDiscordLogin = false },
-            onLoginSuccess = { showDiscordLogin = false }
-        )
-        return
-    }
-
     var selectedColor by remember { mutableStateOf(Color(0xFFFF7A1A)) }
     var useEnd4 by remember { mutableStateOf(false) }
     var useWindowsAccent by remember { mutableStateOf(false) }
@@ -149,7 +138,6 @@ fun SetupScreen(onSetupComplete: () -> Unit) {
     var themeMode by remember { mutableStateOf(prefs.getThemeMode()) }
     var language by remember { mutableStateOf(prefs.getAppLanguage()) }
     var discordRpc by remember { mutableStateOf(prefs.getDiscordRpcEnabled()) }
-    var discordToken by remember { mutableStateOf(prefs.getDiscordToken()) }
 
     // Enforce default variant on first load
     LaunchedEffect(Unit) {
@@ -550,82 +538,20 @@ fun SetupScreen(onSetupComplete: () -> Unit) {
                                         )
                                     }
                                     
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = if (discordToken != null) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                                        border = if (discordToken == null) BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant) else null
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = if (discordToken != null) Icons.Default.Check else Icons.Rounded.Close,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(16.dp),
-                                                tint = if (discordToken != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-                                            )
-                                            Text(
-                                                text = if (discordToken != null) str("setup_discord_connected") else str("setup_discord_not_connected"),
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = if (discordToken != null) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
+                                    Switch(
+                                        checked = discordRpc,
+                                        onCheckedChange = {
+                                            discordRpc = it
+                                            prefs.setDiscordRpcEnabled(it)
                                         }
-                                    }
+                                    )
                                 }
-                                
-                                Spacer(modifier = Modifier.height(16.dp))
-                                
-                                if (discordToken != null) {
-                                    // Account Connected Actions
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        OutlinedButton(
-                                            onClick = { 
-                                                discordToken = null
-                                                discordRpc = false
-                                                prefs.setDiscordToken(null)
-                                                prefs.setDiscordRpcEnabled(false)
-                                                showDiscordLogin = true 
-                                            },
-                                            shapes = ButtonDefaults.shapes(),
-                                            modifier = Modifier.weight(1f),
-                                            contentPadding = PaddingValues(vertical = 8.dp)
-                                        ) {
-                                            Text(str("setup_discord_change"), style = MaterialTheme.typography.labelMedium)
-                                        }
-                                        FilledTonalButton(
-                                            onClick = {
-                                                discordToken = null
-                                                discordRpc = false
-                                                prefs.setDiscordToken(null)
-                                                prefs.setDiscordRpcEnabled(false)
-                                            },
-                                            shapes = ButtonDefaults.shapes(),
-                                            modifier = Modifier.weight(1f),
-                                            contentPadding = PaddingValues(vertical = 8.dp),
-                                            colors = ButtonDefaults.filledTonalButtonColors(
-                                                containerColor = MaterialTheme.colorScheme.errorContainer,
-                                                contentColor = MaterialTheme.colorScheme.onErrorContainer
-                                            )
-                                        ) {
-                                            Text(str("setup_discord_disconnect"), style = MaterialTheme.typography.labelMedium)
-                                        }
-                                    }
-                                } else {
-                                    // Not Connected State
-                                    Button(
-                                        onClick = { showDiscordLogin = true },
-                                        shapes = ButtonDefaults.shapes(),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Text(str("setup_discord_connect"))
-                                    }
-                                }
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = str("discord_ipc_description"),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
 

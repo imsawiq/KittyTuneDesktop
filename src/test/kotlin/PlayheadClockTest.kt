@@ -41,4 +41,22 @@ class PlayheadClockTest {
         clock.step(170_000L, "a", direct = false, running = true, now = 0L)
         assertEquals(0L, clock.step(0L, "b", direct = false, running = true, now = frameNanos))
     }
+    @Test
+    fun `a different clock origin cannot turn a paused end reset into hours`() {
+        val clock = PlayheadClock()
+        val idleOrigin = 10_000_000_000_000_000L
+        clock.step(90_000L, "a", direct = false, running = false, now = idleOrigin)
+        clock.step(0L, "a", direct = false, running = false, now = idleOrigin + frameNanos)
+        assertEquals(0L, clock.step(0L, "a", direct = false, running = false, now = frameNanos))
+    }
+
+    @Test
+    fun `a delayed animation frame never extrapolates past the run ahead limit`() {
+        val clock = PlayheadClock()
+        clock.step(1_000L, "a", direct = false, running = true, now = 0L)
+        clock.step(60_000L, "a", direct = false, running = true, now = frameNanos)
+        val shown = clock.step(60_000L, "a", direct = false, running = true, now = 10_000_000_000_000_000L)
+        assertTrue(shown in 60_000L..61_000L, "A stalled report must not become $shown ms")
+    }
+
 }

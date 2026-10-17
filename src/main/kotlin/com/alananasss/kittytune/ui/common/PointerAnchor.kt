@@ -37,7 +37,7 @@ fun Modifier.notePointerPresses(): Modifier = this.pointerInput(Unit) {
  * Opens a popup with its corner at [anchor] (pixels from the popup's parent), going up or left instead when the popup would
  * leave the window there.
  */
-class AtPointPositionProvider(private val anchor: IntOffset) : PopupPositionProvider {
+class AtPointPositionProvider(private val anchor: IntOffset, private val preferRight: Boolean = false) : PopupPositionProvider {
     override fun calculatePosition(
         anchorBounds: IntRect,
         windowSize: IntSize,
@@ -46,7 +46,7 @@ class AtPointPositionProvider(private val anchor: IntOffset) : PopupPositionProv
     ): IntOffset {
         val ax = anchorBounds.left + anchor.x
         val ay = anchorBounds.top + anchor.y
-        val x = if (ax + popupContentSize.width <= windowSize.width) ax else ax - popupContentSize.width
+        val x = if (preferRight || ax + popupContentSize.width <= windowSize.width) ax else ax - popupContentSize.width
         val y = if (ay + popupContentSize.height <= windowSize.height) ay else ay - popupContentSize.height
         return IntOffset(
             x.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0)),

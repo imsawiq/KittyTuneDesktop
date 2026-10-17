@@ -223,6 +223,7 @@ import com.alananasss.kittytune.utils.Logger
 
         /** Newest songs from the artists whose work is already in the liked list. */
         val likedArtistUpdates = mutableStateListOf<Track>()
+        val likedArtistReleaseRecords = mutableStateListOf<Playlist>()
 
         private fun observeRecentSearches() {
             if (recentSearchesJob != null) return
@@ -347,46 +348,59 @@ import com.alananasss.kittytune.utils.Logger
         /**
          * Newest songs from artists already present in the liked list.
          *
-         * A handful of artists rather than all of them: the endpoint is one request per artist, and
-         * this runs on the home screen's critical path. Artists with nothing new simply contribute
-         * nothing, and the songs already liked are dropped so the row is only ever new ones.
+         * At most ten artists, four provider requests at a time. SoundCloud supplies songs and albums;
+         * Spotify supplies recent catalog records. Already liked standalone songs are omitted.
          */
-        private suspend fun fetchLikedArtistUpdates(localLikes: List<Track>): List<Track> {
-            val artists = localLikes.asSequence()
-                .mapNotNull { it.user?.takeIf { user -> user.id > 0 } }
-                .distinctBy { it.id }
-                .take(ARTIST_UPDATE_SOURCES)
-                .toList()
-            if (artists.isEmpty()) return emptyList()
-
-            val likedIds = localLikes.mapTo(HashSet()) { it.id }
+        private suspend fun fetchLikedArtistUpdates(localLikes: List<Track>): Pair<List<Track>, List<Playlist>> {
+            val seeds = localLikes.filter { it.user != null && (it.source == null || it.source in setOf("soundcloud", "spotify")) }
+                .distinctBy { "${it.source}:${it.user?.urn ?: it.user?.id}" }.take(ARTIST_UPDATE_SOURCES)
+            val permits = kotlinx.coroutines.sync.Semaphore(4)
             val fetched = coroutineScope {
-                artists.map { artist ->
-                    async {
-                        runCatching { api.getUserTracks(artist.id, limit = TRACKS_PER_ARTIST).collection }
-                            .getOrDefault(emptyList())
+                seeds.map { seed -> async {
+                    permits.acquire()
+                    try {
+                        if (seed.source == "spotify") {
+                            val artistId = seed.user?.urn?.takeIf { it.startsWith("spotify:artist:") }?.substringAfterLast(':')
+                                ?: seed.user?.permalink?.takeIf { it.length == 22 && it.all(Char::isLetterOrDigit) }
+                                ?: return@async emptyList<Track>() to emptyList<Playlist>()
+                            val artist = com.alananasss.kittytune.data.spotify.SpotifyRepository.getArtist(artistId)
+                            val recent = (artist?.albums.orEmpty() + artist?.singles.orEmpty() + artist?.popularReleases.orEmpty())
+                                .distinctBy { it.id }.sortedByDescending { it.releaseDate.orEmpty() }.take(MAX_PER_ARTIST)
+                            val records = recent.map { album ->
+                                (com.alananasss.kittytune.data.spotify.SpotifyRepository.getAlbum(album.id) ?: album).toPlaylist()
+                            }
+                            records.flatMap { it.tracks.orEmpty() } to records
+                        } else {
+                            val artistId = seed.user?.id?.takeIf { it > 0 } ?: return@async emptyList<Track>() to emptyList<Playlist>()
+                            val tracks = api.getUserTracks(artistId, limit = TRACKS_PER_ARTIST).collection
+                            val records = try { api.getUserAlbums(artistId, limit = 20).collection.filterNotNull().filter { it.isRealAlbum } }
+                                catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                                catch (error: Exception) { Logger.w("HomeViewModel", "Artist albums unavailable: ${error.message}"); emptyList() }
+                            tracks to records.sortedByDescending { it.releaseDate ?: it.createdAt.orEmpty() }.take(MAX_PER_ARTIST)
+                        }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        Logger.w("HomeViewModel", "Artist releases unavailable: ${error.message}")
+                        emptyList<Track>() to emptyList<Playlist>()
+                    } finally {
+                        permits.release()
                     }
-                }.awaitAll()
+                } }.awaitAll()
             }
-
-            // At most [MAX_PER_ARTIST] songs from any one artist, while the rest of the row stays in
-            // date order. One prolific uploader was filling the whole shelf with their own newest
-            // five, which is a shelf of one artist wearing a shelf's clothes.
-            val perArtist = mutableMapOf<Long, Int>()
-            return fetched.flatten()
-                .filter { it.id > 0L && it.id !in likedIds }
-                .distinctBy { it.id }
-                // ISO 8601 sorts as text, so the newest really is last; a track with no date goes to
-                // the end rather than to the top on an empty string.
-                .sortedByDescending { it.createdAt ?: it.releaseDate ?: "" }
+            val perArtist = mutableMapOf<String, Int>()
+            val tracks = com.alananasss.kittytune.data.artist.ReleaseCatalog.unlikedTracks(fetched.flatMap { it.first }, localLikes)
+                .sortedByDescending { it.releaseDate ?: it.createdAt.orEmpty() }
                 .filter { track ->
-                    val id = track.user?.id ?: 0L
-                    if (id == 0L) return@filter true
-                    val seen = perArtist.getOrDefault(id, 0)
-                    perArtist[id] = seen + 1
+                    val key = "${track.source}:${track.user?.urn ?: track.user?.id}"
+                    val seen = perArtist.getOrDefault(key, 0)
+                    perArtist[key] = seen + 1
                     seen < MAX_PER_ARTIST
-                }
-                .take(ARTIST_UPDATE_TOTAL)
+                }.take(ARTIST_UPDATE_TOTAL)
+            val records = fetched.flatMap { it.second }
+                .distinctBy(com.alananasss.kittytune.data.artist.ReleaseCatalog::recordKey)
+                .sortedByDescending { it.releaseDate ?: it.createdAt.orEmpty() }.take(ARTIST_UPDATE_TOTAL)
+            return tracks to records
         }
 
         companion object {
@@ -399,7 +413,7 @@ import com.alananasss.kittytune.utils.Logger
             /** How long a query has to stand still before its results' streams are looked up. */
             private const val WARM_AFTER_IDLE_MS = 700L
 
-            /** How many liked artists are asked for new songs. One request each, all at once. */
+            /** Maximum number of liked artist catalogs requested for the release shelf. */
             const val ARTIST_UPDATE_SOURCES = 10
 
             private const val TRACKS_PER_ARTIST = 6
@@ -1536,26 +1550,16 @@ import com.alananasss.kittytune.utils.Logger
                     val historySection = historySectionDef.await()
                     val discoverySection = discoverySectionDef.await()
                     val recommendationsSection = recommendationsDef.await()
-                    val artistUpdates = artistUpdatesDef.await()
+                    val (artistUpdates, artistRecords) = artistUpdatesDef.await()
 
                     likedArtistUpdates.clear()
                     likedArtistUpdates.addAll(artistUpdates)
+                    likedArtistReleaseRecords.clear()
+                    likedArtistReleaseRecords.addAll(artistRecords)
 
                     if (discoverySection != null) allSections.add(discoverySection)
                     if (recommendationsSection != null) allSections.add(recommendationsSection)
                     if (historySection != null) allSections.add(historySection)
-                    // Straight after your own history: what the artists you already play have put
-                    // out belongs next to what you just listened to, not down with the generic rows.
-                    if (artistUpdates.isNotEmpty()) {
-                        allSections.add(
-                            HomeSection(
-                                title = str("home_from_your_artists"),
-                                subtitle = str("home_from_your_artists_sub"),
-                                content = artistUpdates,
-                                type = SectionType.TRACKS_ROW,
-                            )
-                        )
-                    }
                     allSections.addAll(personalSections)
                     allSections.addAll(genericSections)
                 }
@@ -1644,19 +1648,11 @@ import com.alananasss.kittytune.utils.Logger
                     val historySection = historySectionDef.await()
                     if (historySection != null) allSections.add(historySection)
 
-                    val artistUpdates = artistUpdatesDef.await()
+                    val (artistUpdates, artistRecords) = artistUpdatesDef.await()
                     likedArtistUpdates.clear()
                     likedArtistUpdates.addAll(artistUpdates)
-                    if (artistUpdates.isNotEmpty()) {
-                        allSections.add(
-                            HomeSection(
-                                title = str("home_from_your_artists"),
-                                subtitle = str("home_from_your_artists_sub"),
-                                content = artistUpdates,
-                                type = SectionType.TRACKS_ROW,
-                            )
-                        )
-                    }
+                    likedArtistReleaseRecords.clear()
+                    likedArtistReleaseRecords.addAll(artistRecords)
 
                     if (sourceLikes.isNotEmpty()) {
                         val personalSections = fetchPersonalizedSections(sourceLikes, me.username ?: str("unknown_user"))

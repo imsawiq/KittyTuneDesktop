@@ -215,9 +215,11 @@ object LyricsUtils {
      * song while saying it is synchronised (issue #66). At least half the lines have to start at a moment of
      * their own, and the stamps have to get past the first second.
      */
-    fun hasRealTimings(lines: List<LyricLine>): Boolean {
+    fun hasRealTimings(lines: List<LyricLine>, explicitSingleLine: Boolean = false): Boolean {
         val sung = lines.filter { !it.isInstrumental && it.text.isNotBlank() }
-        if (sung.size < 2) return sung.size == 1 && sung[0].startTime > 0L
+        if (sung.size < 2) return sung.singleOrNull()?.let { line ->
+            line.startTime > 0L || (explicitSingleLine && line.startTime == 0L && line.endTime > line.startTime)
+        } == true
         val distinctStarts = sung.map { it.startTime }.distinct()
         if (distinctStarts.size * 2 < sung.size) return false
         return sung.maxOf { it.startTime } >= 1_000L
@@ -363,7 +365,10 @@ object LyricsUtils {
             }
         }
         val withoutWatermarks = parsed.filterNot { isWatermarkLine(it.text) }
-        if (!hasRealTimings(withoutWatermarks)) return emptyList()
+        // An authored one-line LRC can legitimately start at zero. Preserve the explicit timestamp;
+        // untagged text and sheets with multiple identical zero stamps still fail the timing checks.
+        val explicitLrc = trimmed.lineSequence().any { LRC_PATTERN.matcher(it.trim()).matches() }
+        if (!hasRealTimings(withoutWatermarks, explicitSingleLine = explicitLrc)) return emptyList()
         return insertInstrumentalBreaks(withoutWatermarks)
     }
 

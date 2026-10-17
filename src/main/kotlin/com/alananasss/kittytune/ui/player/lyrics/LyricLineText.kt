@@ -4,11 +4,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.derivedStateOf
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -32,9 +29,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.runtime.withFrameMillis
 import com.alananasss.kittytune.data.local.LyricsDisplayStyle
-import kotlinx.coroutines.isActive
 
 /**
  * How one line of lyrics looks, in one place (issue #33).
@@ -163,7 +158,12 @@ internal fun LyricLineText(
     /** Fill the width given. Off, the line is as wide as its words are, up to what it was given. */
     fillWidth: Boolean = true,
 ) {
-    val words = if (wordSync && isActive) line.words else emptyList()
+    val words = remember(line, wordSync, isActive) {
+        if (wordSync && isActive) {
+            val contents = formatLyricWordContents(line.text, line.words)
+            line.words.mapIndexed { index, word -> word.copy(text = contents[index]) }
+        } else emptyList()
+    }
     val fullWidth = if (fillWidth) Modifier.fillMaxWidth() else Modifier
 
     if (words.isEmpty()) {
@@ -330,73 +330,6 @@ private fun sungRegion(
 
 /** The widest the fill's soft edge gets, as a multiple of the line's height. */
 private const val SOFT_EDGE_EMS = 1.6f
-
-/**
- * The playback position, interpolated between the player's reports (issue #33).
- *
- * The player reports roughly four times a second. A fill driven straight off that advances in visible steps,
- * so this runs a per-frame estimate from the last report — scaled by the playback speed, because at 2× the
- * words arrive twice as fast.
- *
- * Bounded by [MAX_EXTRAPOLATION_MS] on purpose. The player stops reporting while it buffers, seeks or is
- * scrubbed, and an unbounded estimate then ran the highlight off to the end of the line and snapped it back
- * when the real position finally arrived — reported as "one line goes straight to the end and jumps around".
- *
- * Shared so the panel's fill is as smooth as the full screen's rather than stepping four times a second.
- *
- * Returns the raw State on purpose: read it where it is used — inside a draw lambda (redraw only) or a
- * [derivedStateOf] (recomposition only when the derived value changes) — never straight into a composition.
- * The old Float-returning signature forced every caller to read the per-frame value during composition,
- * which recomposed the visible lyric lines and the mini-player at 60 fps for the whole song.
- */
-/**
- * Interpolated playback position, updated per frame so word-fill and progress move smoothly between
- * the player's 4–5 Hz position reports.
- *
- * Takes a `() -> Long` lambda (not a `Long`) so the caller's composable doesn't recompose on every
- * position tick. The lambda is read inside the frame loop, where a jump > 200 ms (a seek or a
- * re-sync report) snaps the smooth position to the reported value, and small deltas are
- * extrapolated from the last known anchor. This matches the old `LaunchedEffect(positionMs, …)`
- * restart-on-every-tick behaviour without invalidating the caller's composition.
- */
-@Composable
-internal fun rememberSmoothPosition(
-    positionMs: () -> Long,
-    isPlaying: Boolean,
-    speed: Float,
-): State<Float> {
-    val initial = positionMs()
-    val smooth = remember { mutableFloatStateOf(initial.toFloat()) }
-    LaunchedEffect(isPlaying, speed) {
-        if (!isPlaying) {
-            smooth.floatValue = positionMs().toFloat()
-            return@LaunchedEffect
-        }
-        var startedAtMs = System.currentTimeMillis()
-        var startedAt = positionMs().toFloat()
-        while (isActive) {
-            withFrameMillis {
-                val now = System.currentTimeMillis()
-                val reported = positionMs().toFloat()
-                val extrapolated = startedAt + ((now - startedAtMs) * speed)
-                // A jump larger than 200 ms is a seek or a fresh report that's drifted from the
-                // extrapolation — snap to it. Otherwise keep the smooth per-frame extrapolation.
-                if (kotlin.math.abs(reported - extrapolated) > 200f) {
-                    startedAt = reported
-                    startedAtMs = now
-                    smooth.floatValue = reported
-                } else {
-                    val elapsed = (now - startedAtMs).coerceAtMost(MAX_EXTRAPOLATION_MS)
-                    smooth.floatValue = startedAt + (elapsed * speed)
-                }
-            }
-        }
-    }
-    return smooth
-}
-
-/** One report interval plus slack. Past this the estimate is guessing, not interpolating. */
-private const val MAX_EXTRAPOLATION_MS = 400L
 
 /**
  * This line with its words timed evenly across it, when it has none of its own timings (a line timed only as a whole).

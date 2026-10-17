@@ -283,6 +283,9 @@ fun LyricsEnhanced(
                             KaraokeLyricsView(
                                 listState = listState,
                                 lyrics = syncedLyrics,
+                                isPlaying = viewModel.uiIsPlaying,
+                                seekPositionMs = viewModel.uiCurrentPosition,
+                                wheelLines = viewModel.lyricsWheelLines,
                                 userAlignment = userAlignment,
                                 currentPosition = playbackSyncPosition,
                                 onLineClicked = { line ->

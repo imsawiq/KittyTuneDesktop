@@ -435,6 +435,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     var navigateToPlaylistId by mutableStateOf<String?>(null)
     var trackForMenu by mutableStateOf<Track?>(null)
     private var menuContextQueueIndex: Int? = null
+    private var menuContextQueueVersion: String? = null
+    private var menuRepeatTarget by mutableStateOf<Track?>(null)
+    val isMenuQueueOccurrence: Boolean get() = menuContextQueueIndex != null
     var menuContextPlaylistId by mutableStateOf<Long?>(null)
     var isMenuContextFromPlayer by mutableStateOf(false)
 
@@ -1420,7 +1423,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             // audio resumed at full level in a single frame, which is precisely the edge the fade was
             // added to remove.
             if (canFade) {
-                awaitPlaybackResumed(positionMs)
+                awaitPlaybackResumed()
                 fadeVolumeTo(volume)
             }
         } finally {
@@ -1436,7 +1439,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
      * because a seek that never completes — a dead stream URL, a stall — must not leave the track muted:
      * past the deadline the fade runs anyway and the worst case is the hard edge we had before.
      */
-    private suspend fun awaitPlaybackResumed(seekedToMs: Long) {
+    private suspend fun awaitPlaybackResumed() {
         val deadline = System.currentTimeMillis() + TRIM_RESUME_TIMEOUT_MS
         while (System.currentTimeMillis() < deadline) {
             if (!isPlaying) return
@@ -1821,6 +1824,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 currentTrack?.let { loadLyrics(it) }
             }
 
+            activateQueuedMenuRepeat(mediaItem.track)
+
             if (trackActuallyChanged || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
                 currentTrack?.let { checkAndTriggerKaraokeSeparation(it) }
             }
@@ -2018,12 +2023,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
 
     private fun initDiscordRpc() {
-        val token = playerPrefs.getDiscordToken()
         val enabled = playerPrefs.getDiscordRpcEnabled()
-        if (enabled && !token.isNullOrEmpty()) {
+        if (enabled) {
             if (discordRpc == null) {
                 try {
-                    discordRpc = com.alananasss.kittytune.data.DiscordRPC(token)
+                    discordRpc = com.alananasss.kittytune.data.DiscordRPC()
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
@@ -2128,10 +2132,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     fun updateDiscordPresence() {
         updateMprisMedia()
         val track = currentTrack
-        val token = playerPrefs.getDiscordToken()
         val enabled = playerPrefs.getDiscordRpcEnabled()
 
-        if (enabled && !token.isNullOrEmpty() && track != null) {
+        if (enabled && track != null) {
             initDiscordRpc()
             val contextText = currentContext?.displayText
             val playing = isPlaying
@@ -2148,7 +2151,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 }
             }
         } else {
-            closeDiscordRpc()
+            discordJob?.cancel()
+            if (enabled) discordRpc?.clearPresence() else closeDiscordRpc()
         }
     }
 
@@ -2403,8 +2407,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         val isUsable: Boolean get() = syncTier > LyricsMatcher.SYNC_TIER_NONE
     }
 
+    private var backgroundLyricsSearchJob: Job? = null
+
     private fun loadLyrics(track: Track) {
-        lyricsChoiceGeneration++
+        val loadGeneration = ++lyricsChoiceGeneration
+        lyricsSelectionJob?.cancel()
+        backgroundLyricsSearchJob?.cancel()
         lyricsImportJob?.cancel()
         lyricsJob?.cancel()
         lyricsLines.clear()
@@ -2447,7 +2455,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             // A previously chosen manual search result wins over automatic matching.
             val storedOverride = getLyricsOverride(track.id)
             if (storedOverride != null) {
-                withContext(Dispatchers.Main) { selectUnifiedLyricResult(storedOverride) }
+                withContext(Dispatchers.Main) {
+                    if (loadGeneration == lyricsChoiceGeneration && uiCurrentTrack?.id == track.id) selectUnifiedLyricResult(storedOverride)
+                }
                 return@launch
             }
 
@@ -2462,8 +2472,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 variant.translationLang,
                 variant.romanized,
             )
-            if (cached != null && cached.found) {
+            if (cached != null) {
                 withContext(Dispatchers.Main) {
+                    if (loadGeneration != lyricsChoiceGeneration || uiCurrentTrack?.id != track.id) return@withContext
                     applyLyricsPayload(LyricsPayload(cached.lines, cached.plain, cached.provider))
                 }
                 prefetchQueueLyrics()
@@ -2472,14 +2483,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
             val local = loadEmbeddedLyrics(track)
             if (local != null) {
-                withContext(Dispatchers.Main) { applyLyricsPayload(local) }
+                withContext(Dispatchers.Main) {
+                    if (loadGeneration == lyricsChoiceGeneration && uiCurrentTrack?.id == track.id) applyLyricsPayload(local)
+                }
                 prefetchQueueLyrics()
                 return@launch
             }
 
             val payload = resolveLyrics(track, queries, variant) { provisional ->
                 withContext(Dispatchers.Main) {
-                    if (isActive && currentTrack?.id == track.id) applyLyricsPayload(provisional)
+                    if (isActive && loadGeneration == lyricsChoiceGeneration && uiCurrentTrack?.id == track.id) applyLyricsPayload(provisional)
                 }
             }
             if (!isActive) return@launch
@@ -2498,7 +2511,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             )
 
             withContext(Dispatchers.Main) {
-                applyLyricsPayload(payload ?: LyricsPayload(emptyList(), null, null))
+                if (loadGeneration == lyricsChoiceGeneration && uiCurrentTrack?.id == track.id) {
+                    applyLyricsPayload(payload ?: LyricsPayload(emptyList(), null, null))
+                }
             }
             prefetchQueueLyrics()
         }
@@ -2654,6 +2669,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                     matchScore = matchScore.coerceAtLeast(0.85f),
                     titleSimilarity = titleSim.coerceAtLeast(0.85f),
                 )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 // Continue to next candidate pair
             }
@@ -2705,11 +2722,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 val query = queries.firstOrNull() ?: "${target.title} ${target.artist}".trim()
                 var found: LyricsCandidate? = null
                 for (spelling in LyricsMatcher.queryVariants(query, track.title.orEmpty())) {
-                    found = searchMusixmatchCandidates(spelling, target, trackDurationMs, variant).firstOrNull()
+                    found = searchMusixmatchCandidates(spelling, target, trackDurationMs).firstOrNull()
                     if (found != null) break
                 }
                 found ?: com.alananasss.kittytune.data.lyrics.TitleSpellings.respelled(query)?.let { respelled ->
-                    searchMusixmatchCandidates(respelled, target, trackDurationMs, variant).firstOrNull()
+                    searchMusixmatchCandidates(respelled, target, trackDurationMs).firstOrNull()
                 }
             }
             PreferredLyricsProvider.LRCLIB -> {
@@ -2809,18 +2826,19 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         target: LyricsMatcher.Target,
         trackDurationMs: Long,
     ): List<LyricsCandidate> {
-        val directResults = if (target.title.isNotBlank() && target.artist.isNotBlank()) {
-            try {
-                LrcLibClient.api.searchLyricsStructured(target.title, target.artist)
-            } catch (e: Exception) {
-                emptyList()
+        val (directResults, queryResults) = supervisorScope {
+            val direct = async {
+                if (target.title.isBlank() || target.artist.isBlank()) emptyList()
+                else try { LrcLibClient.api.searchLyricsStructured(target.title, target.artist) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { emptyList() }
             }
-        } else emptyList()
-
-        val queryResults = try {
-            LrcLibClient.api.searchLyrics(query)
-        } catch (e: Exception) {
-            emptyList()
+            val freeText = async {
+                try { LrcLibClient.api.searchLyrics(query) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { emptyList() }
+            }
+            direct.await() to freeText.await()
         }
 
         val allResults = (directResults + queryResults).distinctBy { it.id }
@@ -2863,10 +2881,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         query: String,
         target: LyricsMatcher.Target,
         trackDurationMs: Long,
-        variant: LyricsVariant,
     ): List<LyricsCandidate> {
         val results = try {
             MusixmatchClient.search(query)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             emptyList()
         }
@@ -2898,9 +2917,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             MusixmatchClient.getLyricsData(
                 pick.trackId,
                 trackDurationMs,
-                variant.translationLang,
-                variant.romanized,
+                // Decorations happen after provisional lyrics reach the screen.
+                targetLang = null,
+                wantsRomanization = false,
             )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
             return emptyList()
         }
@@ -3030,7 +3052,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    fun loadCustomLyrics(content: String) {
+    fun loadCustomLyrics(content: String, keepSearchOpen: Boolean = false) {
         val track = uiCurrentTrack ?: return
         if (content.isBlank()) return
         lyricsImportJob?.cancel()
@@ -3057,7 +3079,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             }
             unifiedLyricSearchResults.removeAll { it.provider == "LOCAL" }
             unifiedLyricSearchResults.add(0, result)
-            selectUnifiedLyricResult(result)
+            selectUnifiedLyricResult(result, keepSearchOpen = keepSearchOpen)
         }
     }
 
@@ -3155,23 +3177,29 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         manualLyricSearchJob = viewModelScope.launch {
             PaxsenixClient.setApiKey(playerPrefs.getPaxsenixApiKey())
             try {
-                val localResult = withContext(Dispatchers.IO) {
-                    val imported = lyricsOverrides.getImported(track.id)
-                    imported ?: DownloadManager.getLocalTrack(track.id)?.localAudioPath
-                        ?.takeIf { it.isNotBlank() }
-                        ?.let { LyricsUtils.extractLocalLyrics(it) }
-                        ?.let { ManualLyricsSearch.localResult(searchTrack, it) }
-                }
-                if (generation != manualSearchGeneration) return@launch
-                localResult?.let { unifiedLyricSearchResults.add(it) }
                 supervisorScope {
+                    launch {
+                        val localResult = withContext(Dispatchers.IO) {
+                            val imported = lyricsOverrides.getImported(track.id)
+                            imported ?: DownloadManager.getLocalTrack(track.id)?.localAudioPath
+                                ?.takeIf { it.isNotBlank() }
+                                ?.let { LyricsUtils.extractLocalLyrics(it) }
+                                ?.let { ManualLyricsSearch.localResult(searchTrack, it) }
+                        }
+                        if (generation != manualSearchGeneration || uiCurrentTrack?.id != track.id) return@launch
+                        if (localResult != null) {
+                            val merged = ManualLyricsSearch.merge(unifiedLyricSearchResults.toList(), listOf(localResult), target)
+                            unifiedLyricSearchResults.clear()
+                            unifiedLyricSearchResults.addAll(merged)
+                        }
+                    }
                     sources.forEach { source ->
                         launch(Dispatchers.IO) {
                             val found = withTimeoutOrNull(ManualLyricsSearch.PROVIDER_TIMEOUT_MS) {
                                 ManualLyricsSearch.search(source, query, searchTrack)
                             }.orEmpty()
                             withContext(Dispatchers.Main) {
-                                if (generation != manualSearchGeneration) return@withContext
+                                if (generation != manualSearchGeneration || uiCurrentTrack?.id != track.id) return@withContext
                                 val merged = ManualLyricsSearch.merge(unifiedLyricSearchResults.toList(), found, target)
                                 unifiedLyricSearchResults.clear()
                                 unifiedLyricSearchResults.addAll(merged)
@@ -3180,7 +3208,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                         }
                     }
                 }
-                onSettled?.invoke(target)
+                if (generation == manualSearchGeneration && uiCurrentTrack?.id == track.id) onSettled?.invoke(target)
             } finally {
                 withContext(NonCancellable + Dispatchers.Main) {
                     if (generation == manualSearchGeneration) {
@@ -3197,10 +3225,15 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
      * opens on results already there instead of starting from nothing (issue #66).
      */
     private fun searchLyricsInBackground(track: Track, query: String) {
-        viewModelScope.launch {
+        backgroundLyricsSearchJob = viewModelScope.launch {
             lyricsJob?.join()
             delay(BACKGROUND_LYRICS_SEARCH_DELAY_MS)
-            if (uiCurrentTrack?.id != track.id) return@launch
+            if (uiCurrentTrack?.id != track.id || getLyricsOverride(track.id) != null) return@launch
+            val variant = currentLyricsVariant()
+            val cached = withContext(Dispatchers.IO) {
+                LyricsCache.get(track.id, variant.providerPreference, variant.translationLang, variant.romanized)
+            }
+            if (cached?.found == false) return@launch
             if (lyricSearchTrackId == track.id && unifiedLyricSearchResults.isNotEmpty()) return@launch
             startManualLyricsSearch(query, ManualLyricsSearch.ALL) { target -> upgradeToSyncedLyrics(track, target) }
         }
@@ -3220,7 +3253,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         selectUnifiedLyricResult(best, isManualPick = false)
     }
 
-    fun selectUnifiedLyricResult(result: UnifiedLyricResult, isManualPick: Boolean = true) {
+    fun selectUnifiedLyricResult(result: UnifiedLyricResult, isManualPick: Boolean = true, keepSearchOpen: Boolean = false) {
         lyricsChoiceGeneration++
         // The automatic search has to be cut dead here. It was left running, so a slow resolution —
         // and it is slow once Genius is in the chain — finished after the manual pick and overwrote
@@ -3319,7 +3352,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                     lyricsMode = LyricsMode.PLAIN
                 }
                 isLyricsLoading = false
-                isSearchingLyrics = false
+                if (!keepSearchOpen) isSearchingLyrics = false
                 currentLyricsSource = result.provider.takeIf { finalLines.isNotEmpty() || !finalPlain.isNullOrBlank() }
             }
 
@@ -3739,6 +3772,15 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
     fun loadComments(refresh: Boolean = false, specificTrack: Track? = null) {
         val t = specificTrack ?: commentsTrack ?: selectedTrackForSheet ?: trackForMenu ?: currentTrack ?: return
+        if (t.id <= 0L || (t.source != null && t.source != "soundcloud")) {
+            commentsGeneration++
+            commentsJob?.cancel()
+            commentsTrack = t
+            commentsList.clear()
+            commentNextHref = null
+            isCommentsLoading = false
+            return
+        }
         val trackChanged = commentsTrack?.id != t.id
         val replace = refresh || trackChanged
         if (!replace && (isCommentsLoading || commentNextHref == null)) return
@@ -4031,6 +4073,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             isPlayerExpanded = false
         }
         SoundCloudTelemetryTracker.onQueueReset()
+        menuRepeatTarget = null
         playedTrackIds = emptySet()
         _originalQueue.clear(); _originalQueue.addAll(cleanTracks)
         _queue.clear()
@@ -4569,6 +4612,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
     fun toggleRepeatMode() {
         if (routeRemote("repeat", when (uiRepeatMode) { RepeatMode.NONE -> 1; RepeatMode.ALL -> 2; RepeatMode.ONE -> 0 })) return
+        menuRepeatTarget = null
         repeatMode = when (repeatMode) {
             RepeatMode.NONE -> RepeatMode.ALL
             RepeatMode.ALL -> RepeatMode.ONE
@@ -4588,6 +4632,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
     fun updateQueueState() {
         queueState = _queue.toList()
+        if (menuRepeatTarget != null && _queue.none { it === menuRepeatTarget }) menuRepeatTarget = null
     }
 
     fun moveQueueItem(from: Int, to: Int) {
@@ -4635,6 +4680,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         if (index !in _queue.indices) return
 
         val trackToRemove = _queue[index]
+        if (menuRepeatTarget === trackToRemove) menuRepeatTarget = null
 
         // 1. Remove from _queue
         _queue.removeAt(index)
@@ -4685,6 +4731,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
     fun insertNext(tracks: List<Track>) {
         if (tracks.isEmpty()) return
+        if (routeRemoteQueueTracks("insert_next", tracks)) return
         val cleanTracks = com.alananasss.kittytune.data.BlockManager.filterBlocked(tracks)
         if (cleanTracks.isEmpty()) return
         val insertIndex = currentQueueIndex + 1
@@ -4707,18 +4754,82 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         emitUiEvent(str("menu_play_next"))
     }
 
-    /** A queue menu moves its selected occurrence; a library menu adds a new one. */
-    fun playMenuTrackNext(track: Track) {
-        val from = menuContextQueueIndex
-        if (from == null) {
-            insertNext(listOf(track))
+    /** Counts come from the queue, so reopening a menu cannot invent or forget an insertion. */
+    fun menuQueueStatus(track: Track): QueueMenuStatus {
+        if (!isRemotePlayback) return localMenuQueueStatus(track)
+        val remote = remotePeer?.snapshot
+        return QueueMenuStatus(
+            futureCount = futureQueueOccurrences(uiQueueState, uiCurrentQueueIndex, track).size,
+            isRepeatArmed = remote != null && remote.pendingRepeatTrackId == track.id && remote.pendingRepeatTrackSource == track.source,
+            isRepeating = uiRepeatMode == RepeatMode.ONE && track.isSameQueueTrack(uiCurrentTrack),
+            isCountLowerBound = uiQueueState.size >= 500,
+        )
+    }
+
+    private fun localMenuQueueStatus(track: Track, queue: List<Track> = queueState) = QueueMenuStatus(
+        futureCount = futureQueueOccurrences(queue, currentQueueIndex, track).size,
+        isRepeatArmed = menuRepeatTarget?.let { target ->
+            target.isSameQueueTrack(track) && queue.indexOfFirst { it === target }.let { it >= 0 && it >= currentQueueIndex }
+        } == true,
+        isRepeating = repeatMode == RepeatMode.ONE && track.isSameQueueTrack(currentTrack),
+    )
+
+    /** A queue menu moves its exact occurrence; library clicks add one, two, then arm its future repeat. */
+    fun playMenuTrackNext(track: Track) = enqueueMenuTrackNext(track, menuContextQueueIndex)
+
+    private fun enqueueMenuTrackNext(track: Track, occurrenceIndex: Int?) {
+        if (occurrenceIndex != null) {
+            if (routeRemoteQueueTracks("move_next", listOf(track), occurrenceIndex.toLong(), menuContextQueueVersion)) return
+            moveMenuOccurrenceNext(track, occurrenceIndex)
             return
         }
-        // The queue may have changed while the menu was open. Never move another occurrence.
-        if (_queue.getOrNull(from) !== track) return
+        if (routeRemoteQueueTracks("menu_next", listOf(track))) return
+        if (com.alananasss.kittytune.data.BlockManager.isBlocked(track)) return
+        when (localMenuQueueStatus(track, _queue).action) {
+            QueueMenuAction.INSERT_NEXT -> insertNext(listOf(track))
+            QueueMenuAction.ARM_REPEAT -> {
+                menuRepeatTarget = futureQueueOccurrences(_queue, currentQueueIndex, track).firstOrNull()
+                ConnectManager.publish(connectSnapshot())
+            }
+            QueueMenuAction.NONE -> Unit
+        }
+    }
+
+    private fun moveMenuOccurrenceNext(track: Track, from: Int) {
+        // Remote payloads are copies, so verify source+id; local menus retain exact occurrence identity.
+        val actual = _queue.getOrNull(from)
+        if (applyingConnectCommand) require(actual != null && actual.isSameQueueTrack(track)) { "Queue changed; try again" }
+        else if (actual !== track) return
         val destination = queuePlayNextDestination(_queue.size, currentQueueIndex, from) ?: return
         moveQueueItem(from, destination)
+        if (!applyingConnectCommand && menuContextQueueIndex == from) menuContextQueueIndex = destination
         emitUiEvent(str("menu_play_next"))
+    }
+
+    private fun routeRemoteQueueTracks(action: String, tracks: List<Track>, value: Long = 0,
+                                       expectedQueueVersion: String? = null): Boolean {
+        if (applyingConnectCommand || applyingTogether) return false
+        val device = ConnectManager.selectedDevice.value ?: return false
+        ConnectManager.command(device, action, value, state = PlaybackSnapshot(
+            SyncLog.deviceId, System.currentTimeMillis(), tracks.take(500), 0, 0, false, false, "NONE",
+        ), expectedQueueVersion = expectedQueueVersion)
+        return true
+    }
+
+    private fun activateQueuedMenuRepeat(playingTrack: Track?) {
+        val target = menuRepeatTarget ?: return
+        when (queuedRepeatDisposition(target, _queue, currentQueueIndex, playingTrack)) {
+            QueuedRepeatDisposition.WAIT -> Unit
+            QueuedRepeatDisposition.CANCEL -> menuRepeatTarget = null
+            QueuedRepeatDisposition.ACTIVATE -> {
+                menuRepeatTarget = null
+                repeatMode = RepeatMode.ONE
+                applyRepeatMode()
+                saveStateAsync(saveQueue = false)
+                mprisService?.updateLoopStatus(repeatMode.toMprisLoopStatus())
+                ConnectManager.publish(connectSnapshot())
+            }
+        }
     }
 
     fun togglePlayPause() {
@@ -5513,6 +5624,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         queueIndex: Int? = null,
     ) {
         menuContextQueueIndex = queueIndex
+        menuContextQueueVersion = if (isRemotePlayback && queueIndex != null) {
+            remotePeer?.queueVersion?.takeIf { uiQueueState.getOrNull(queueIndex) === track }.orEmpty()
+        } else null
         trackForMenu = track; menuContextPlaylistId = playlistContextId; isMenuContextFromPlayer =
             fromPlayer; showMenuSheet = true
     }
@@ -5640,8 +5754,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     /** Captured on the UI thread; a live controller never overwrites the local player. */
     private fun connectSnapshot(): PlaybackSnapshot? {
         val window = connectQueueWindow.capture(queueState, currentQueueIndex) ?: return null
+        val pendingRepeat = menuRepeatTarget?.takeIf { target ->
+            _queue.indexOfFirst { it === target }.let { it >= 0 && it >= currentQueueIndex }
+        }
         return PlaybackSnapshot(SyncLog.deviceId, System.currentTimeMillis(), window.queue,
-            window.index, currentPosition.coerceAtLeast(0L), isPlaying, shuffleEnabled, repeatMode.name, volume = volume)
+            window.index, currentPosition.coerceAtLeast(0L), isPlaying, shuffleEnabled, repeatMode.name, volume = volume,
+            pendingRepeatTrackId = pendingRepeat?.id,
+            pendingRepeatTrackSource = pendingRepeat?.source)
     }
 
     private suspend fun handleConnectCommand(command: ConnectMessage) {
@@ -5661,6 +5780,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             "shuffle" -> if (shuffleEnabled != (command.value == 1L)) toggleShuffle()
             "repeat" -> {
                 val target = when (command.value) { 0L -> RepeatMode.NONE; 1L -> RepeatMode.ALL; 2L -> RepeatMode.ONE; else -> error("Invalid repeat mode") }
+                menuRepeatTarget = null
                 repeatMode = target
                 applyRepeatMode()
             }
@@ -5680,10 +5800,23 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 val start = if (queueState.size > 500) (currentQueueIndex - 250).coerceIn(0, queueState.size - 500) else 0
                 moveQueueItem(command.value.toInt() + start, command.value2.toInt() + start)
             }
-            "append" -> {
+            "append", "insert_next", "menu_next", "move_next" -> {
                 val tracks = command.state?.queue ?: error("No tracks")
                 require(tracks.size in 1..500 && tracks.none { it.source == "local" })
-                addToQueue(tracks)
+                when (command.action) {
+                    "append" -> addToQueue(tracks)
+                    "insert_next" -> insertNext(tracks)
+                    "menu_next" -> {
+                        require(tracks.size == 1)
+                        enqueueMenuTrackNext(tracks.single(), null)
+                    }
+                    "move_next" -> {
+                        require(tracks.size == 1 && command.queueVersion.isNotBlank()) { "Queue changed; try again" }
+                        val window = connectQueueWindow.capture(queueState, currentQueueIndex) ?: error("Queue is empty")
+                        require(command.value in 0L until window.queue.size.toLong()) { "Invalid queue item" }
+                        moveMenuOccurrenceNext(tracks.single(), window.offset + command.value.toInt())
+                    }
+                }
             }
             "transfer" -> {
                 ConnectManager.selectDevice(null)
@@ -5868,7 +6001,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                         val crossfadeEnabled = playerPrefs.getCrossfadeEnabled()
                         val automixEnabled = playerPrefs.getAutomixEnabled()
                         val debugOverlayEnabled = playerPrefs.getAutomixDebugOverlayEnabled()
-                        val crossfadeMs = playerPrefs.getCrossfadeDuration() * 1000L
+                        val crossfadeMs = com.alananasss.kittytune.audio.automix.TransitionFallback.durationMs(crossfadeEnabled, automixEnabled, playerPrefs.getCrossfadeDuration())
                         val exoDur = if (MusicManager.player.duration > 0) MusicManager.player.duration else 0L
                         val trackDur = currentTrack?.durationMs ?: 0L
                         val dur = if (exoDur > 0L) exoDur else trackDur
@@ -5946,18 +6079,18 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                                     if (nextTrack != null && remainingToCrossfade in 1000L..12000L && !MusicManager.player.isCrossfadingOut && !MusicManager.isPrebuffered(nextTrack.id)) {
                                         triggerPrebuffer(nextTrack, null)
                                     }
-                                    if (currentPosition >= (dur - crossfadeMs) && !MusicManager.player.isCrossfadingOut) {
+                                    if (currentPosition >= (dur - crossfadeMs) && System.currentTimeMillis() - lastSeekTimestamp > MIX_AFTER_SEEK_MS && !MusicManager.player.isCrossfadingOut) {
                                         com.alananasss.kittytune.audio.automix.AutomixManager.setMixBeatsLeft(null)
                                         MusicManager.player.isCrossfadingOut = true
                                         playNext(manual = false, isCrossfade = true)
                                     }
                                 }
-                            } else if (!isGaplessAlbum && crossfadeEnabled && dur > 0L) {
+                            } else if (!isGaplessAlbum && (crossfadeEnabled || automixEnabled) && dur > 0L) {
                                 val remainingToCrossfade = (dur - crossfadeMs) - currentPosition
                                 if (nextTrack != null && remainingToCrossfade in 1000L..12000L && !MusicManager.player.isCrossfadingOut && !MusicManager.isPrebuffered(nextTrack.id)) {
                                     triggerPrebuffer(nextTrack, null)
                                 }
-                                if (currentPosition >= (dur - crossfadeMs) && !MusicManager.player.isCrossfadingOut) {
+                                if (currentPosition >= (dur - crossfadeMs) && System.currentTimeMillis() - lastSeekTimestamp > MIX_AFTER_SEEK_MS && !MusicManager.player.isCrossfadingOut) {
                                     com.alananasss.kittytune.audio.automix.AutomixManager.setMixBeatsLeft(null)
                                     MusicManager.player.isCrossfadingOut = true
                                     playNext(manual = false, isCrossfade = true)
@@ -5970,7 +6103,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                             if (nextTrack != null && remainingToCrossfade in 1000L..12000L && !MusicManager.player.isCrossfadingOut && !MusicManager.isPrebuffered(nextTrack.id)) {
                                 triggerPrebuffer(nextTrack, null)
                             }
-                            if (currentPosition >= (dur - crossfadeMs) && !MusicManager.player.isCrossfadingOut) {
+                            if (currentPosition >= (dur - crossfadeMs) && System.currentTimeMillis() - lastSeekTimestamp > MIX_AFTER_SEEK_MS && !MusicManager.player.isCrossfadingOut) {
                                 com.alananasss.kittytune.audio.automix.AutomixManager.setMixBeatsLeft(null)
                                 MusicManager.player.isCrossfadingOut = true
                                 playNext(manual = false, isCrossfade = true)
@@ -6475,7 +6608,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                     currentPosition = MusicManager.player.currentPosition.coerceAtLeast(0L)
                     if (MusicManager.player.duration > 0) duration = MusicManager.player.duration
                     startProgressUpdate()
-                    val crossfadeDurationMs = playerPrefs.getCrossfadeDuration() * 1000L
+                    val crossfadeDurationMs = com.alananasss.kittytune.audio.automix.TransitionFallback.durationMs(playerPrefs.getCrossfadeEnabled(), playerPrefs.getAutomixEnabled(), playerPrefs.getCrossfadeDuration())
                     val automixPlan = if (playerPrefs.getAutomixEnabled()) com.alananasss.kittytune.audio.automix.AutomixManager.currentAutomixPlan else null
                     MusicManager.crossfadeToMediaItem(emptyItem, startPosition, crossfadeDurationMs, automixPlan)
                     MusicManager.applyEffects(effectsState)
@@ -6589,7 +6722,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                     currentStreamSource = finalStreamSource
                     queueChunkingJob?.cancel()
 
-                    val crossfadeDurationMs = playerPrefs.getCrossfadeDuration() * 1000L
+                    val crossfadeDurationMs = com.alananasss.kittytune.audio.automix.TransitionFallback.durationMs(playerPrefs.getCrossfadeEnabled(), playerPrefs.getAutomixEnabled(), playerPrefs.getCrossfadeDuration())
                     val automixPlan = if (playerPrefs.getAutomixEnabled()) com.alananasss.kittytune.audio.automix.AutomixManager.currentAutomixPlan else null
                     if (isCrossfade && (automixPlan != null || crossfadeDurationMs > 0) && MusicManager.player.isPlaying && startPosition == 0L) {
                         MusicManager.crossfadeToMediaItem(newMediaItem, startPosition, crossfadeDurationMs, automixPlan)

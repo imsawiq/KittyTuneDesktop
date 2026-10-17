@@ -209,42 +209,55 @@ internal fun HomeChartSection(vm: HomeViewModel, playerViewModel: PlayerViewMode
         )
 }
 
-/**
- * New songs from the artists already in the liked list, newest first, in one row; nothing when there are none.
- *
- * It used to split them by release Friday under three sub-titles, each with a row and a line of explanation, which on
- * a page of rows was a lot of small print. One row, each song with its date, is what it is for.
- */
+/** Recent releases from followed listening habits; an album represents all its constituent tracks. */
 @Composable
 internal fun FromYourArtistsSection(vm: HomeViewModel, playerViewModel: PlayerViewModel) {
-    if (vm.likedArtistUpdates.isEmpty()) return
-    val unfilteredTracks = remember(vm.likedArtistUpdates.toList()) {
-        ReleaseWeeks.group(vm.likedArtistUpdates.toList()).flatMap { it.tracks }.take(FROM_YOUR_ARTISTS_COUNT)
+    val tracks = rememberFilteredTracks(vm.likedArtistUpdates.toList())
+    val records = vm.likedArtistReleaseRecords.filter { it.user?.id?.let(BlockManager::isArtistBlocked) != true }
+    val releases = remember(tracks, records) {
+        com.alananasss.kittytune.ui.profile.ArtistRelease.latestOf(tracks, records, count = Int.MAX_VALUE)
     }
-    val tracks = rememberFilteredTracks(unfilteredTracks)
+    var showingAll by remember { mutableStateOf(false) }
+    if (releases.isEmpty()) return
+    val title = str("home_from_your_artists")
+    val context = PlaybackContext(displayText = title, navigationId = "home")
+    val openRelease: (com.alananasss.kittytune.ui.profile.ArtistRelease) -> Unit = { release ->
+        when (release) {
+            is com.alananasss.kittytune.ui.profile.ArtistRelease.Song -> playerViewModel.playPlaylist(listOf(release.track), 0, context)
+            is com.alananasss.kittytune.ui.profile.ArtistRelease.Record -> {
+                showingAll = false
+                playerViewModel.navigateToPlaylistId = release.playlist.urn?.takeIf { it.startsWith("spotify:") }
+                    ?: release.playlist.id.toString()
+            }
+        }
+    }
     Column {
-        LandingHeader(str("home_from_your_artists"), action = null)
+        LandingHeader(title, action = str("btn_see_all") to { showingAll = true })
         ScrollableLazyRow(
             contentPadding = PaddingValues(horizontal = CONTENT_PADDING),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             fadeColor = MaterialTheme.colorScheme.surfaceContainerLow,
         ) {
-            items(tracks.size) { index ->
-                val track = tracks[index]
-                LandingTrackCard(
-                    track = track,
-                    isCurrent = playerViewModel.uiCurrentTrack?.id == track.id,
-                    releaseDate = ReleaseWeeks.releaseDateOf(track),
-                    onClick = {
-                        playerViewModel.playPlaylist(
-                            tracks = tracks,
-                            startIndex = index,
-                            context = PlaybackContext(
-                                displayText = str("home_from_your_artists"),
-                                navigationId = "home",
-                            ),
-                        )
-                    },
+            items(releases.take(FROM_YOUR_ARTISTS_COUNT).size) { index ->
+                com.alananasss.kittytune.ui.profile.NewReleaseCard(
+                    release = releases[index],
+                    playerViewModel = playerViewModel,
+                    context = context,
+                    onNavigate = { playerViewModel.navigateToPlaylistId = it },
+                    modifier = Modifier.width(420.dp),
+                )
+            }
+        }
+    }
+    if (showingAll) {
+        com.alananasss.kittytune.core.BackHandler(onBack = { showingAll = false })
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showingAll = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Surface(shape = RoundedCornerShape(28.dp), modifier = Modifier.fillMaxSize(0.9f)) {
+                com.alananasss.kittytune.ui.profile.AllReleasesScreen(
+                    title = title, releases = releases, onBack = { showingAll = false }, onOpen = openRelease,
                 )
             }
         }

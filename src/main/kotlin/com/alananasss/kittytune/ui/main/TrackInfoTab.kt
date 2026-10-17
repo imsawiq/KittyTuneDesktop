@@ -83,8 +83,10 @@ fun TrackInfoTab(vm: PlayerViewModel) {
     val trackId = currentTrack.id
 
     val isSpotifyTrack = remember(trackId) { vm.isSpotifyTrack(currentTrack) }
+    val hasSoundCloudEntity = trackId > 0L &&
+        (currentTrack.source == null || currentTrack.source == "soundcloud")
     var fullTrack by remember(trackId) { mutableStateOf<Track?>(null) }
-    var isLoading by remember(trackId) { mutableStateOf(!isSpotifyTrack) }
+    var isLoading by remember(trackId) { mutableStateOf(hasSoundCloudEntity) }
     var spotifyCredits by remember(trackId) {
         mutableStateOf<com.alananasss.kittytune.data.spotify.SpotifyCredits?>(null)
     }
@@ -103,6 +105,7 @@ fun TrackInfoTab(vm: PlayerViewModel) {
             }
             return@LaunchedEffect
         }
+        if (!hasSoundCloudEntity) return@LaunchedEffect
         isLoading = true
         scope.launch {
             try {
@@ -165,7 +168,7 @@ fun TrackInfoTab(vm: PlayerViewModel) {
      */
     val playerPrefs = remember { com.alananasss.kittytune.data.local.PlayerPreferences() }
     var showLyricsHalf by remember { mutableStateOf(PanelHistory.present.lyricsHalf ?: playerPrefs.infoPanelOpensOnLyrics()) }
-    val lyricsHalf = isSpotifyTrack || showLyricsHalf
+    val lyricsHalf = !hasSoundCloudEntity || showLyricsHalf
     // Comments or lyrics is part of where the panel is, for the mouse's back and forward buttons.
     LaunchedEffect(showLyricsHalf) { PanelHistory.noteHalf(showLyricsHalf) }
     LaunchedEffect(PanelHistory.movedTick) {
@@ -247,7 +250,7 @@ fun TrackInfoTab(vm: PlayerViewModel) {
 
         // Social Liked Proof Banner (e.g. "Mandra and 1,400 others liked this track")
         val socialLiker = vm.socialLikerUser
-        if (!isSpotifyTrack && socialLiker != null) {
+        if (hasSoundCloudEntity && socialLiker != null) {
             item {
                 Surface(
                     onClick = { vm.navigateToArtist(socialLiker.id) },
@@ -316,7 +319,7 @@ fun TrackInfoTab(vm: PlayerViewModel) {
 
         // The switch between the two halves. Only for SoundCloud tracks: a catalog track has no
         // comments, so there would be only one side to switch to (issue #33).
-        if (!isSpotifyTrack) item {
+        if (hasSoundCloudEntity) item {
             InfoHalfToggle(
                 lyricsSelected = lyricsHalf,
                 commentCount = displayTrack.commentCount ?: organizedComments.size,

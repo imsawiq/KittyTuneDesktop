@@ -62,7 +62,7 @@ import com.alananasss.kittytune.ui.player.lyrics.LyricLine
 import com.alananasss.kittytune.ui.player.lyrics.LyricSinger
 import com.alananasss.kittytune.ui.player.lyrics.LyricLineStyling
 import com.alananasss.kittytune.ui.player.lyrics.LyricLineText
-import com.alananasss.kittytune.ui.player.lyrics.rememberSmoothPosition
+import com.alananasss.kittytune.ui.player.lyrics.timing.rememberSmoothPosition
 import com.alananasss.kittytune.ui.player.lyrics.FollowPlainLyrics
 import com.alananasss.kittytune.ui.player.lyrics.revealWhenPlaced
 import com.alananasss.kittytune.ui.player.lyrics.stopAtLastLine
@@ -88,8 +88,18 @@ fun PanelLyrics(
     /** How much room the words get around themselves. See [PanelLyricsStyle]. */
     style: PanelLyricsStyle = PanelLyricsStyle.Panel,
 ) {
+    BoxWithConstraints(modifier) {
+        val requested = if (style.isFullScreen) vm.lyricsFullScreenFontSize else vm.lyricsSidebarFontSize
+        val targetSize = if (style.isFullScreen) requested else
+            com.alananasss.kittytune.ui.player.lyrics.panelLyricsFontSize(requested, maxWidth.value, maxHeight.value)
+        val fontSize by animateFloatAsState(targetSize, tween(220), label = "panelLyricsResponsiveFont")
+        PanelLyricsContent(vm, Modifier.fillMaxSize(), style, fontSize)
+    }
+}
+
+@Composable
+private fun PanelLyricsContent(vm: PlayerViewModel, modifier: Modifier, style: PanelLyricsStyle, fontSize: Float) {
     val lines = vm.lyricsLines
-    val effectiveFontSize = if (style.isFullScreen) vm.lyricsFullScreenFontSize else vm.lyricsSidebarFontSize
     val textColor = MaterialTheme.colorScheme.onSurface
     when {
         lines.isNotEmpty() -> {
@@ -100,18 +110,18 @@ fun PanelLyrics(
                         viewModel = vm,
                         modifier = modifier,
                         textColorOverride = textColor,
-                        fontSizeOverride = effectiveFontSize,
+                        fontSizeOverride = fontSize,
                         lineSpacingOverride = if (style.lineSpacing > 0.dp) style.lineSpacing else null,
                         isFullScreen = style.isFullScreen,
                         isSidebar = !style.isFullScreen
                     )
                 }
                 com.alananasss.kittytune.data.local.LyricsUiStyle.CLASSIC -> {
-                    PanelSyncedLyrics(vm, lines, modifier, style)
+                    PanelSyncedLyrics(vm, lines, modifier, style, fontSize)
                 }
             }
         }
-        !vm.rawPlainLyrics.isNullOrBlank() -> PanelPlainLyrics(vm, modifier, style)
+        !vm.rawPlainLyrics.isNullOrBlank() -> PanelPlainLyrics(vm, modifier, style, fontSize)
         vm.isLyricsLoading -> com.alananasss.kittytune.ui.player.lyrics.LyricsSearchingIndicator(
             fontFamily = com.alananasss.kittytune.ui.theme.rememberLyricsFontFamily(vm.lyricsFont),
             modifier = modifier.fillMaxWidth(),
@@ -162,6 +172,7 @@ private fun PanelSyncedLyrics(
     lines: List<LyricLine>,
     modifier: Modifier,
     style: PanelLyricsStyle,
+    fontSize: Float,
 ) {
     // Starts on the line being sung, so the first frame is not the top of the song (issue #33, round 5).
     val listState = key(vm.uiCurrentTrack?.id) {
@@ -169,6 +180,8 @@ private fun PanelSyncedLyrics(
             initialFirstVisibleItemIndex = LyricsUtils.activeLineIndex(lines, vm.uiCurrentPosition + vm.lyricsOffset).coerceAtLeast(0)
         )
     }
+    val scope = rememberCoroutineScope()
+    var lastManualScrollMs by remember { mutableStateOf(0L) }
     // Derived rather than read straight from the position, so the lines recompose when the line
     // changes and not on every progress tick.
     val activeIndex by remember {
@@ -205,7 +218,13 @@ private fun PanelSyncedLyrics(
         val anchorPx =
             (viewportPx * (effectiveStyle.anchorFraction - effectiveStyle.topInsetFraction).coerceAtLeast(0f)).toInt()
 
-        val readingByHand = FollowActiveLine(listState, activeIndex, anchorPx, contentKey = lines.size to lines.firstOrNull()?.startTime)
+        val readingByHand = FollowActiveLine(
+            listState, activeIndex, anchorPx,
+            contentKey = lines.size to lines.firstOrNull()?.startTime,
+            manualScrollMs = lastManualScrollMs,
+            isPlaying = vm.uiIsPlaying,
+            positionMs = vm.uiCurrentPosition,
+        )
         val focusIndex = rememberFocusLine(listState, activeIndex, readingByHand)
 
         // Interpolated between the player's four-per-second reports, so the word fill in the panel is as
@@ -219,7 +238,10 @@ private fun PanelSyncedLyrics(
         )
 
         LazyColumn(
-            Modifier.fillMaxSize().revealWhenPlaced(listState, activeIndex, contentKey = lines.size to lines.firstOrNull()?.startTime).stopAtLastLine(listState),
+            Modifier.fillMaxSize()
+                .revealWhenPlaced(listState, activeIndex, contentKey = lines.size to lines.firstOrNull()?.startTime)
+                .stopAtLastLine(listState)
+                .lyricsWheel(listState, scope, { vm.lyricsWheelLines }) { lastManualScrollMs = System.currentTimeMillis() },
             state = listState,
             contentPadding = PaddingValues(
                 start = effectiveStyle.startPadding,
@@ -234,6 +256,7 @@ private fun PanelSyncedLyrics(
                     vm = vm,
                     line = line,
                     style = effectiveStyle,
+                    fontSize = fontSize,
                     // Negative for lines already sung. Before the first line starts there is no current
                     // line, and treating every line as "far away" would shrink the whole panel — so the
                     // distance is zero for all of them until the song reaches the words.
@@ -271,6 +294,7 @@ private fun PanelLyricLine(
     vm: PlayerViewModel,
     line: LyricLine,
     style: PanelLyricsStyle,
+    fontSize: Float,
     distance: Int,
     isSung: Boolean,
     isReadingByHand: Boolean,
@@ -302,7 +326,7 @@ private fun PanelLyricLine(
     // heavy block with a heavier bit in it (issue #33).
     val isCompact = style.anchorFraction == 0.50f && !style.isFullScreen
     val lyricsFontFamily = com.alananasss.kittytune.ui.theme.rememberLyricsFontFamily(vm.lyricsFont)
-    val panelSize = (if (style.isFullScreen) vm.lyricsFullScreenFontSize else vm.lyricsSidebarFontSize).sp
+    val panelSize = fontSize.sp
     val base = (if (isCompact) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.titleMedium).copy(
         fontFamily = lyricsFontFamily,
         fontSize = panelSize,
@@ -469,7 +493,7 @@ private fun PanelLyricLine(
  * a given speed means.
  */
 @Composable
-private fun PanelPlainLyrics(vm: PlayerViewModel, modifier: Modifier, style: PanelLyricsStyle) {
+private fun PanelPlainLyrics(vm: PlayerViewModel, modifier: Modifier, style: PanelLyricsStyle, fontSize: Float) {
     val text = vm.rawPlainLyrics.orEmpty()
     val lines = remember(text) { text.split("\n") }
     val listState = key(vm.uiCurrentTrack?.id) { rememberLazyListState() }
@@ -491,7 +515,7 @@ private fun PanelPlainLyrics(vm: PlayerViewModel, modifier: Modifier, style: Pan
     )
 
     val lyricsFontFamily = com.alananasss.kittytune.ui.theme.rememberLyricsFontFamily(vm.lyricsFont)
-    val panelSize = (if (style.isFullScreen) vm.lyricsFullScreenFontSize else vm.lyricsSidebarFontSize).sp
+    val panelSize = fontSize.sp
     val plainStyle = MaterialTheme.typography.titleMedium.copy(
         fontFamily = lyricsFontFamily,
         fontSize = panelSize,

@@ -65,8 +65,11 @@ fun rememberSmoothPlayhead(
                 if (!clock.isGliding) delay(IDLE_CHECK_MS)
                 continue
             }
-            withFrameNanos { now ->
-                shown.longValue = clock.step(reported, key, direct, running, now)
+            withFrameNanos {
+                // A compositor's frame timestamp may have a different origin than nanoTime
+                // (including a new origin after the window is recreated). Use one clock for
+                // idle updates and animated updates; frames only pace the animation.
+                shown.longValue = clock.step(reported, key, direct, running, System.nanoTime())
             }
         }
     }
@@ -87,7 +90,7 @@ internal class PlayheadClock {
     val isGliding: Boolean get() = glideFrom != null
 
     fun step(reported: Long, key: Any?, direct: Boolean, running: Boolean, now: Long): Long {
-        if (key != lastKey || direct) {
+        if (key != lastKey || direct || now < lastFrameNanos) {
             lastKey = key
             glideFrom = null
             snapTo(reported, now)
@@ -117,8 +120,9 @@ internal class PlayheadClock {
 
         val from = glideFrom
         if (from != null) {
-            val t = (now - glideAtNanos).toFloat() / SEEK_GLIDE_NANOS
-            val target = reported + if (running) (now - lastReportNanos) / 1_000_000.0 * rate else 0.0
+            val t = ((now - glideAtNanos).toFloat() / SEEK_GLIDE_NANOS).coerceIn(0f, 1f)
+            val aheadMs = (now - lastReportNanos).coerceIn(0L, MAX_RUN_AHEAD_MS * 1_000_000L) / 1_000_000.0
+            val target = reported + if (running) aheadMs * rate else 0.0
             if (t >= 1f) {
                 glideFrom = null
                 drawn = target

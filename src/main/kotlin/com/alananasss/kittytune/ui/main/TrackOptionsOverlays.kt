@@ -152,6 +152,7 @@ private data class MenuOptionItem(
     val text: String,
     val tint: androidx.compose.ui.graphics.Color? = null,
     val iconContent: (@Composable (androidx.compose.ui.graphics.Color) -> Unit)? = null,
+    val enabled: Boolean = true,
     val onClick: () -> Unit,
 )
 
@@ -167,9 +168,9 @@ private val SpotifyAccentGreen = androidx.compose.ui.graphics.Color(0xFF1DB954)
 fun TrackOptionsOverlays(viewModel: PlayerViewModel) {
     if (viewModel.showMenuSheet) {
         BackHandler(onBack = { viewModel.showMenuSheet = false })
-        TrackMenuAtPointer(onDismiss = { viewModel.showMenuSheet = false }) {
-            MenuSheetContent(viewModel)
-        }
+    }
+    TrackMenuAtPointer(visible = viewModel.showMenuSheet, preferRight = viewModel.isMenuContextFromPlayer, onDismiss = { viewModel.showMenuSheet = false }) {
+        MenuSheetContent(viewModel)
     }
     if (viewModel.showCommentsSheet) {
         BackHandler(onBack = { viewModel.showCommentsSheet = false })
@@ -220,19 +221,17 @@ fun TrackOptionsOverlays(viewModel: PlayerViewModel) {
  * back into it, and closes on a click outside or Escape.
  */
 @Composable
-private fun TrackMenuAtPointer(onDismiss: () -> Unit, content: @Composable () -> Unit) {
+private fun TrackMenuAtPointer(visible: Boolean, preferRight: Boolean, onDismiss: () -> Unit, content: @Composable () -> Unit) {
+    val shown = remember { androidx.compose.animation.core.MutableTransitionState(false) }
+    shown.targetState = visible
+    if (!shown.currentState && !shown.targetState) return
     val anchor = remember {
         val press = com.alananasss.kittytune.ui.common.PointerAnchor.lastPress.value
         androidx.compose.ui.unit.IntOffset(press.x.toInt(), press.y.toInt())
     }
-    val shown = remember { androidx.compose.animation.core.MutableTransitionState(false).apply { targetState = true } }
-    var closing by remember { mutableStateOf(false) }
-    val close = { if (!closing) { closing = true; shown.targetState = false } }
-    LaunchedEffect(shown.currentState, shown.isIdle) {
-        if (closing && shown.isIdle && !shown.currentState) onDismiss()
-    }
+    val close = onDismiss
     androidx.compose.ui.window.Popup(
-        popupPositionProvider = remember(anchor) { com.alananasss.kittytune.ui.common.AtPointPositionProvider(anchor) },
+        popupPositionProvider = remember(anchor, preferRight) { com.alananasss.kittytune.ui.common.AtPointPositionProvider(anchor, preferRight) },
         onDismissRequest = close,
         properties = androidx.compose.ui.window.PopupProperties(focusable = true),
         onKeyEvent = { event ->
@@ -517,8 +516,31 @@ private fun MenuSheetContent(viewModel: PlayerViewModel) {
                 )
             }
             if (!viewModel.isMenuContextFromPlayer) {
-                add(MenuOptionItem("play_next", Icons.AutoMirrored.Rounded.PlaylistPlay, str("menu_play_next")) { viewModel.playMenuTrackNext(track); viewModel.showMenuSheet = false })
-                add(MenuOptionItem("add_queue", Icons.AutoMirrored.Rounded.QueueMusic, str("menu_add_queue")) { viewModel.addToQueue(listOf(track)); viewModel.showMenuSheet = false })
+                val queueStatus = viewModel.menuQueueStatus(track)
+                val isOccurrenceMove = viewModel.isMenuQueueOccurrence
+                val nextLabel = when {
+                    isOccurrenceMove -> str("menu_play_next")
+                    queueStatus.isRepeatArmed -> str("menu_next_repeat_armed")
+                    queueStatus.isRepeating -> str("menu_next_repeating")
+                    queueStatus.futureCount > 0 || queueStatus.isCountLowerBound -> str("menu_next_queued_count", queueStatus.futureCount.toString() + if (queueStatus.isCountLowerBound) "+" else "")
+                    else -> str("menu_play_next")
+                }
+                add(MenuOptionItem(
+                    id = "play_next",
+                    icon = if (!isOccurrenceMove && !queueStatus.canAdd) Icons.Rounded.RepeatOne else Icons.AutoMirrored.Rounded.PlaylistPlay,
+                    text = nextLabel,
+                    tint = activeColor.takeIf { !isOccurrenceMove && (queueStatus.futureCount > 0 || !queueStatus.canAdd) },
+                    enabled = isOccurrenceMove || queueStatus.canAdd,
+                ) {
+                    viewModel.playMenuTrackNext(track)
+                    if (isOccurrenceMove) viewModel.showMenuSheet = false
+                })
+                add(MenuOptionItem(
+                    id = "add_queue",
+                    icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                    text = str("menu_add_queue"),
+                    enabled = queueStatus.canAdd,
+                ) { viewModel.addToQueue(listOf(track)); viewModel.showMenuSheet = false })
             }
             // In a shared playlist a song can go next for everyone, or be offered to the playlist itself.
             val togetherCode = com.alananasss.kittytune.data.together.Together.active.collectAsState().value
@@ -1553,6 +1575,7 @@ private fun ReorderableCollectionItemScope.MenuTile(
     onHide: () -> Unit,
 ) {
     var contextMenuOpen by remember { mutableStateOf(false) }
+    val interaction = remember { MutableInteractionSource() }
     val tint = item.tint ?: MaterialTheme.colorScheme.onSurface
     // Lifted rather than shadowed: the tile has no container of its own to cast one.
     val scale by animateFloatAsState(if (isDragging) 1.12f else 1f, label = "menuTileScale")
@@ -1568,7 +1591,7 @@ private fun ReorderableCollectionItemScope.MenuTile(
                 // regardless of whether their label is 1 or 2 lines. Icons line up in straight rows
                 // and labels sit vertically centered in their allocated slot.
                 .fillMaxSize()
-                .graphicsLayer { scaleX = scale; scaleY = scale }
+                .graphicsLayer { scaleX = scale; scaleY = scale; alpha = if (item.enabled) 1f else 0.65f }
                 .clip(RoundedCornerShape(16.dp))
                 .background(
                     if (item.tint != null) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
@@ -1579,14 +1602,21 @@ private fun ReorderableCollectionItemScope.MenuTile(
                     matcher = PointerMatcher.mouse(PointerButton.Secondary),
                     onClick = { contextMenuOpen = true },
                 )
-                .clickable { item.onClick() }
+                .clickable(enabled = item.enabled, interactionSource = interaction, indication = androidx.compose.material3.ripple()) { item.onClick() }
                 .pointerHoverIcon(PointerIcon.Hand)
                 .padding(horizontal = 6.dp, vertical = 10.dp)
         ) {
             // One size and one tone for every icon: 26.dp centered in a matching slot.
             val icon = item.iconContent
             Box(modifier = Modifier.size(26.dp), contentAlignment = Alignment.Center) {
-                if (icon != null) {
+                if (item.id == "shuffle") {
+                    com.alananasss.kittytune.ui.common.animation.AnimatedShuffleIcon(
+                        active = item.tint != null,
+                        interactionSource = interaction,
+                        tint = tint,
+                        modifier = Modifier.size(26.dp),
+                    )
+                } else if (icon != null) {
                     icon(tint)
                 } else {
                     Icon(item.icon, null, modifier = Modifier.size(26.dp), tint = tint)

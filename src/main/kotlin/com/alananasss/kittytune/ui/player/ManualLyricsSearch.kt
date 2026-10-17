@@ -1,5 +1,8 @@
 package com.alananasss.kittytune.ui.player
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import com.alananasss.kittytune.data.LyricsMatcher
 import com.alananasss.kittytune.data.local.PlayerPreferences
 import com.alananasss.kittytune.data.lyrics.clients.SimpMusicClient
@@ -70,9 +73,13 @@ internal object ManualLyricsSearch {
                 PreferredLyricsProvider.SIMPMUSIC -> searchSimpMusic(variant)
                 else -> searchByTitle(provider, variant, track)
             }
-        }.getOrDefault(emptyList())
+        }.getOrElse { failure ->
+            if (failure is CancellationException) throw failure
+            emptyList()
+        }
 
         for (variant in LyricsMatcher.queryVariants(query, track.title)) {
+            currentCoroutineContext().ensureActive()
             val found = searchAs(variant)
             if (found.isNotEmpty()) return found
         }

@@ -118,6 +118,45 @@ fun SearchLyricsView(
         if (nothingYet && query.isNotBlank()) viewModel.searchLyricsManual(query, viewModel.manualSearchProvider)
     }
 
+    var showEditor by remember(viewModel.uiCurrentTrack?.id) { mutableStateOf(false) }
+    var publishDraft by remember(viewModel.uiCurrentTrack?.id) {
+        mutableStateOf<com.alananasss.kittytune.data.lyrics.publishing.LyricsPublishDraft?>(null)
+    }
+    publishDraft?.let { draft ->
+        com.alananasss.kittytune.ui.player.lyrics.editor.LyricsPublishDialog(draft) { publishDraft = null }
+    }
+    if (showEditor) {
+        com.alananasss.kittytune.ui.player.lyrics.editor.LyricsTimingEditorDialog(
+            initialText = viewModel.rawPlainLyrics?.takeIf { it.isNotBlank() }
+                ?: viewModel.lyricsLines.filter { !it.isInstrumental }.joinToString("\n") { it.text },
+            positionMs = viewModel.uiCurrentPosition,
+            durationMs = viewModel.uiDuration,
+            isPlaying = viewModel.uiIsPlaying,
+            onTogglePlayback = { viewModel.togglePlayPause() },
+            onSeekStart = { viewModel.seekTo(0L) },
+            onSave = { content ->
+                viewModel.loadCustomLyrics(content)
+                showEditor = false
+                onCloseSearch()
+            },
+            onDismiss = { showEditor = false },
+            onPublishDraft = { plain, synced ->
+                val track = viewModel.uiCurrentTrack
+                if (track != null) {
+                    viewModel.loadCustomLyrics(synced, keepSearchOpen = true)
+                    publishDraft = com.alananasss.kittytune.data.lyrics.publishing.LyricsPublishDraft(
+                        trackName = track.title.orEmpty(),
+                        artistName = track.displayArtist,
+                        albumName = track.publisherMetadata?.albumTitle.orEmpty(),
+                        durationSeconds = viewModel.uiDuration / 1000.0,
+                        plainLyrics = plain,
+                        syncedLyrics = synced,
+                    )
+                }
+            },
+        )
+    }
+
     var showUpload by remember { mutableStateOf(false) }
     if (showUpload) UploadYamlDialog(viewModel = viewModel, onDismiss = { showUpload = false })
 
@@ -129,6 +168,11 @@ fun SearchLyricsView(
             onClose = onCloseSearch,
         )
         SourceChips(viewModel, onPick = runSearch)
+        FilledTonalButton(onClick = { showEditor = true }, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Icon(Icons.Rounded.Timer, null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(str("lyrics_editor_title"))
+        }
         SearchStatus(viewModel)
         SearchResults(viewModel, onUpload = { showUpload = true })
     }

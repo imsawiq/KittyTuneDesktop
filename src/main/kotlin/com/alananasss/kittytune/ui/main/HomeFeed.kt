@@ -122,6 +122,9 @@ internal fun HomeFeed(
 
         if (showHomeListeningStats) {
             item(key = "stats") { Box(Modifier.padding(horizontal = HOME_PADDING)) { ListeningStatsCard(navController) } }
+            item(key = "monthly_recap") {
+                com.alananasss.kittytune.ui.home.MonthlyRecapSection(onOpenStats = { navController.navigate("listening_stats") })
+            }
         }
 
         item(key = "chart") {
@@ -133,7 +136,9 @@ internal fun HomeFeed(
             item(key = "clips") { com.alananasss.kittytune.ui.profile.HomeClipsShelf(playerViewModel, homeClips) }
         }
 
-        if (vm.likedArtistUpdates.isNotEmpty()) {
+        item(key = "warmup") { com.alananasss.kittytune.ui.home.WarmupSection(playerViewModel) }
+
+        if (vm.likedArtistUpdates.isNotEmpty() || vm.likedArtistReleaseRecords.isNotEmpty()) {
             item(key = "from_artists") { com.alananasss.kittytune.ui.home.FromYourArtistsSection(vm, playerViewModel) }
         }
 
@@ -141,7 +146,7 @@ internal fun HomeFeed(
             item(key = "mix") { Box(Modifier.padding(horizontal = HOME_PADDING)) { StartMixingCard(playerViewModel) } }
         }
 
-        items(vm.homeSections, key = { it.title }) { section ->
+        items(vm.homeSections.filterNot { it.title == str("home_from_your_artists") }, key = { it.title }) { section ->
             val visibleContent = remember(section.content, blockedTrackIds, blockedArtistIds) {
                 section.content.filter { item ->
                     when (item) {

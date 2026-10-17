@@ -12,6 +12,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,6 +39,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
@@ -315,6 +319,17 @@ fun TogetherScreen(code: String, playerViewModel: PlayerViewModel, onBack: () ->
                 else if (isListening) Together.playNext(t)
                 else Together.startListening(code, index)
             }) {
+                if (Together.mayEditPlaylist(code)) {
+                    IconButton(onClick = { Together.movePlaylistTrack(code, index, index - 1) }, enabled = index > 0) {
+                        Icon(Icons.Rounded.KeyboardArrowUp, str("together_move_up"))
+                    }
+                    IconButton(onClick = { Together.movePlaylistTrack(code, index, index + 1) }, enabled = index < room.playlist.lastIndex) {
+                        Icon(Icons.Rounded.KeyboardArrowDown, str("together_move_down"))
+                    }
+                    IconButton(onClick = { Together.removePlaylistTrack(code, index) }) {
+                        Icon(Icons.Rounded.Delete, str("together_remove_track"))
+                    }
+                }
                 if (isListening) {
                     IconButton(onClick = { Together.playNext(t) }, shapes = IconButtonDefaults.shapes()) {
                         Icon(Icons.AutoMirrored.Rounded.PlaylistPlay, str("together_play_next"))
@@ -461,12 +476,15 @@ private fun RoomHeader(
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun MembersRow(room: Together.Room, isHost: Boolean) {
     val listeners = room.listeners
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (isHost) MemberChip(Together.myName, isHost = true, isMe = true)
+    val active by Together.active.collectAsState()
+    val isMeListening = active == room.code
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (isMeListening || isHost) MemberChip(Together.myName, isHost = isHost, isMe = true)
         listeners.forEach { member -> MemberChip(member.name, isHost = member.id == room.hostId, isMe = false) }
-        if (!isHost && listeners.isEmpty()) {
+        if (!isMeListening && !isHost && listeners.isEmpty()) {
             Text(str("together_nobody"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }

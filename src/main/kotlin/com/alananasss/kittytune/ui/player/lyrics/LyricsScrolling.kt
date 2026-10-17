@@ -37,6 +37,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.floor
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * How the lyrics views scroll, shared by the full screen and the right-hand panel (issue #33).
@@ -105,6 +107,24 @@ internal object LyricsScrolling {
     fun wheelStepPx(notches: Float, lines: Float, lineHeightPx: Float): Float =
         notches * lines * lineHeightPx
 
+    /** Fractional deltas are left smooth for high-resolution wheels and trackpads. */
+    fun isWholeWheelNotch(delta: Float): Boolean =
+        delta.isFinite() && abs(delta) >= 1f && abs(delta - delta.roundToInt()) < 0.001f
+
+    /** A discrete mouse notch always ends on a lyric-row boundary. */
+    fun wheelRowDelta(notches: Float, lines: Float): Int {
+        if (notches == 0f || !notches.isFinite() || !lines.isFinite()) return 0
+        val count = (abs(notches) * lines.coerceAtLeast(0f)).roundToInt().coerceAtLeast(1)
+        return if (notches < 0f) -count else count
+    }
+
+    /** Null means the paused reader owns the viewport until playback or an explicit seek resumes. */
+    fun manualReadingDelayMs(lastManualMs: Long, nowMs: Long, isPlaying: Boolean): Long? {
+        if (lastManualMs <= 0L) return 0L
+        if (!isPlaying) return null
+        return (MANUAL_GRACE_MS - (nowMs - lastManualMs)).coerceAtLeast(0L)
+    }
+
     /** How long a manual scroll holds the automatic one off, counted from when the scrolling stopped. */
     const val PLAIN_PAUSE_MS = 3_000L
 
@@ -158,9 +178,15 @@ internal fun FollowActiveLine(
     anchorPx: Int = 0,
     centred: Boolean = false,
     contentKey: Any? = null,
+    manualScrollMs: Long = 0L,
+    isPlaying: Boolean = true,
+    positionMs: Long? = null,
 ): Boolean {
     var lastManualScrollMs by remember { mutableStateOf(0L) }
     var readingByHand by remember { mutableStateOf(false) }
+    LaunchedEffect(manualScrollMs) {
+        if (manualScrollMs > 0L) lastManualScrollMs = manualScrollMs
+    }
 
     /** True for exactly as long as the scroll below is ours, so the flag cannot be misattributed. */
     var autoScrolling by remember { mutableStateOf(false) }
@@ -171,10 +197,13 @@ internal fun FollowActiveLine(
     // Its own clock, not the follow loop's: that one only runs when the line changes, and a reader who
     // scrolls during a long line would otherwise stay "by hand" until the next one. It starts counting when
     // the scrolling stops; it used to count from when it started, so a long scroll was taken back mid-way.
-    LaunchedEffect(lastManualScrollMs, scrollingByHand) {
+    LaunchedEffect(lastManualScrollMs, scrollingByHand, isPlaying) {
         if (lastManualScrollMs == 0L) return@LaunchedEffect
         readingByHand = true
         if (scrollingByHand) return@LaunchedEffect
+        if (LyricsScrolling.manualReadingDelayMs(lastManualScrollMs, System.currentTimeMillis(), isPlaying) == null)
+            return@LaunchedEffect
+        // Restart the full grace when playback resumes, even after a long pause.
         delay(LyricsScrolling.MANUAL_GRACE_MS)
         readingByHand = false
     }
@@ -212,9 +241,21 @@ internal fun FollowActiveLine(
         }
     }
 
-    // Keyed on the line alone. Keying it on the manual timestamp is what made it cancel itself.
-    LaunchedEffect(activeIndex, anchorPx, contentKey) {
+    val pausedPosition = positionMs.takeUnless { isPlaying }
+    var previousPausedPosition by remember(listState, contentKey) { mutableStateOf(pausedPosition) }
+    var previousActiveIndex by remember(listState, contentKey) { mutableStateOf(activeIndex) }
+    // Playback reports are observed only while paused, so normal progress cannot restart a glide.
+    LaunchedEffect(activeIndex, anchorPx, contentKey, isPlaying, pausedPosition) {
+        val pausedSeek = !isPlaying && (
+            (previousPausedPosition != null && pausedPosition != previousPausedPosition) || previousActiveIndex != activeIndex
+        )
+        previousPausedPosition = pausedPosition
+        previousActiveIndex = activeIndex
         if (activeIndex < 0) return@LaunchedEffect
+        if (pausedSeek && placed) {
+            lastManualScrollMs = 0L
+            readingByHand = false
+        }
 
         // Re-read each time round: a second scroll during the wait extends it rather than being ignored. The
         // way back once the wait is over is the effect below, so a line that changed meanwhile has nothing to do.
@@ -225,9 +266,15 @@ internal fun FollowActiveLine(
                 delay(MANUAL_POLL_MS)
                 continue
             }
-            val remaining =
-                LyricsScrolling.MANUAL_GRACE_MS - (System.currentTimeMillis() - lastManualScrollMs)
-            if (remaining <= 0) break
+            val remaining = if (!placed) 0L else
+                LyricsScrolling.manualReadingDelayMs(lastManualScrollMs, System.currentTimeMillis(), isPlaying)
+                    ?: return@LaunchedEffect
+            if (remaining <= 0) {
+                if (!readingByHand) break
+                waited = true
+                delay(MANUAL_POLL_MS)
+                continue
+            }
             waited = true
             delay(remaining)
         }
@@ -268,7 +315,7 @@ internal fun FollowActiveLine(
     // blur came back over it (issue #66). The whole list slides back as one; see [returnToLine].
     val currentActive by rememberUpdatedState(activeIndex)
     LaunchedEffect(readingByHand) {
-        if (readingByHand || !placed || currentActive < 0) return@LaunchedEffect
+        if (readingByHand || !isPlaying || !placed || currentActive < 0) return@LaunchedEffect
         autoScrolling = true
         try {
             listState.returnToLine(currentActive) { followOffset(listState, currentActive, anchorPx, centred) }
@@ -465,6 +512,10 @@ internal fun FollowPlainLyrics(
         var appliedOffset = Int.MIN_VALUE
         /** Set while a manual scroll holds us off, so the way back is animated rather than a snap. */
         var returningFromManual = false
+        var previousPausedPosition: Long? = if (playing()) null else position()
+        var ignoredManualThroughMs = 0L
+        var resumedReadingAtMs = 0L
+        var wasPlaying = playing()
 
         while (true) {
             withFrameNanos { }
@@ -475,8 +526,20 @@ internal fun FollowPlainLyrics(
                 reportedAtMs = System.currentTimeMillis()
             }
 
-            val lastTouched = maxOf(lastManual(), lastForeignScrollMs)
-            if (foreignScrolling || System.currentTimeMillis() - lastTouched < LyricsScrolling.PLAIN_PAUSE_MS) {
+            val isPlayingNow = playing()
+            val pausedSeek = !isPlayingNow && previousPausedPosition != null && fresh != previousPausedPosition
+            previousPausedPosition = if (isPlayingNow) null else fresh
+            if (pausedSeek) {
+                ignoredManualThroughMs = maxOf(lastManual(), lastForeignScrollMs, resumedReadingAtMs)
+                returningFromManual = false
+                appliedIndex = -1
+            }
+            if (isPlayingNow && !wasPlaying && returningFromManual) resumedReadingAtMs = System.currentTimeMillis()
+            wasPlaying = isPlayingNow
+            val lastTouched = maxOf(lastManual(), lastForeignScrollMs, resumedReadingAtMs)
+                .takeIf { it > ignoredManualThroughMs } ?: 0L
+            val remaining = LyricsScrolling.manualReadingDelayMs(lastTouched, System.currentTimeMillis(), isPlayingNow)
+            if (foreignScrolling || remaining == null || remaining > 0L) {
                 returningFromManual = true
                 continue
             }
@@ -551,6 +614,7 @@ internal fun Modifier.lyricsWheel(
     var pendingPx = 0f
     var slidPx = 0f
     var slide: Job? = null
+    var desiredRow: Int? = null
     awaitPointerEventScope {
         while (true) {
             // Initial, so the decision is made before the list's own wheel handling on Main.
@@ -561,6 +625,22 @@ internal fun Modifier.lyricsWheel(
                     if (notches == 0f) continue
                     onManualScroll()
                     event.changes.forEach { it.consume() }
+                    if (LyricsScrolling.isWholeWheelNotch(notches)) {
+                        val origin = desiredRow.takeIf { slide?.isActive == true } ?: listState.firstVisibleItemIndex
+                        val target = (origin + LyricsScrolling.wheelRowDelta(notches, lines()))
+                            .coerceIn(0, (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+                        slide?.cancel()
+                        desiredRow = target
+                        pendingPx = 0f
+                        slidPx = 0f
+                        slide = scope.launch {
+                            listState.slideWheelToRow(target)
+                            desiredRow = null
+                            onManualScroll()
+                        }
+                        continue
+                    }
+                    desiredRow = null
                     val step = LyricsScrolling.wheelStepPx(
                         notches = notches,
                         lines = lines(),
@@ -584,12 +664,45 @@ internal fun Modifier.lyricsWheel(
                         }
                         pendingPx = 0f
                         slidPx = 0f
+                        onManualScroll()
                     }
                 }
                 // A drag is the list's to handle; this only notes that the reader took over.
-                PointerEventType.Press -> onManualScroll()
+                PointerEventType.Press -> {
+                    slide?.cancel()
+                    desiredRow = null
+                    pendingPx = 0f
+                    slidPx = 0f
+                    onManualScroll()
+                }
                 else -> Unit
             }
+        }
+    }
+}
+
+/** Re-measure each row during the slide: wrapped lyric rows can have very different heights. */
+private suspend fun LazyListState.slideWheelToRow(requestedIndex: Int) {
+    scroll {
+        val started = withFrameNanos { it }
+        var travelled = 0f
+        while (true) {
+            val now = withFrameNanos { it }
+            val progress = ((now - started) / 1_000_000f / WHEEL_SLIDE_MS).coerceIn(0f, 1f)
+            val info = layoutInfo
+            val visible = info.visibleItemsInfo
+            if (visible.isEmpty()) break
+            val maxIndex = if (visible.last().index == info.totalItemsCount - 1) {
+                val room = roomForwardPx()
+                visible.lastOrNull { it.offset <= room }?.index ?: firstVisibleItemIndex
+            } else info.totalItemsCount - 1
+            val target = requestedIndex.coerceIn(0, maxIndex.coerceAtLeast(0))
+            val remaining = distanceToLine(target) { 0 } ?: break
+            val wanted = (travelled + remaining) * LinearOutSlowInEasing.transform(progress)
+            val step = wanted - travelled
+            val consumed = scrollBy(step)
+            travelled += consumed
+            if (progress >= 1f || abs(consumed) + 0.5f < abs(step)) break
         }
     }
 }

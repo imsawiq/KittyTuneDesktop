@@ -555,8 +555,8 @@ fun ProfileScreen(
                                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                             ) {
                                 items(artistMixes.size) { index ->
-                                    ArtistMixCard(artistMixes[index], accentIndex = index) { tracks ->
-                                        playerViewModel.playPlaylist(tracks, 0, artistPlaybackContext, respectShuffle = false)
+                                    ArtistMixCard(artistMixes[index], accentIndex = index) { playlistId ->
+                                        playerViewModel.navigateToPlaylistId = "local_playlist:$playlistId"
                                     }
                                 }
                             }
@@ -978,7 +978,8 @@ fun ModernProfileHeader(
             if (profileViewModel.isSpotifyProfile) {
                 // Catalog artist: shuffle the top tracks and open the Spotify radio.
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Button(
+                    val shuffleInteraction1 = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                    Button(interactionSource = shuffleInteraction1,
                         onClick = {
                             if (profileViewModel.popularTracks.isNotEmpty()) {
                                 playerViewModel.playPlaylistShuffled(
@@ -992,7 +993,7 @@ fun ModernProfileHeader(
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary),
                         elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
                     ) {
-                        Icon(Icons.Default.Shuffle, null, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
+                        com.alananasss.kittytune.ui.common.animation.AnimatedShuffleIcon(interactionSource = shuffleInteraction1, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
                         Text(str("btn_shuffle"), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     FilledTonalButton(
@@ -1064,7 +1065,8 @@ fun ModernProfileHeader(
             } else {
                 if (user.trackCount > 0) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                        Button(shapes = ButtonDefaults.shapes(), onClick = {
+                        val shuffleInteraction2 = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                        Button(interactionSource = shuffleInteraction2, shapes = ButtonDefaults.shapes(), onClick = {
                                 playerViewModel.playPlaylistShuffled(
                                     tracks = profileViewModel.allTracks.toList(),
                                     context = artistContext
@@ -1074,7 +1076,7 @@ fun ModernProfileHeader(
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary),
                             elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
                         ) {
-                            Icon(Icons.Default.Shuffle, null, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
+                            com.alananasss.kittytune.ui.common.animation.AnimatedShuffleIcon(interactionSource = shuffleInteraction2, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
                             Text(str("btn_shuffle"), style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         FilledTonalButton(shapes = ButtonDefaults.shapes(), onClick = { onNavigate("station_artist:${user.id}") },
@@ -1375,10 +1377,11 @@ internal fun FullListScreen(
                     ) {
                         Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(8.dp)); Text(str("btn_play"), fontWeight = FontWeight.Bold)
                     }
-                    FilledTonalButton(shapes = ButtonDefaults.shapes(), onClick = { playerViewModel.playPlaylistShuffled(filteredTracks, context = context) },
+                    val shuffleInteraction3 = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                    FilledTonalButton(interactionSource = shuffleInteraction3, shapes = ButtonDefaults.shapes(), onClick = { playerViewModel.playPlaylistShuffled(filteredTracks, context = context) },
                         modifier = Modifier.weight(1f).height(44.dp)
                     ) {
-                        Icon(Icons.Default.Shuffle, null); Spacer(Modifier.width(8.dp)); Text(str("btn_shuffle"), fontWeight = FontWeight.Bold)
+                        com.alananasss.kittytune.ui.common.animation.AnimatedShuffleIcon(interactionSource = shuffleInteraction3); Spacer(Modifier.width(8.dp)); Text(str("btn_shuffle"), fontWeight = FontWeight.Bold)
                     }
                 }
             }

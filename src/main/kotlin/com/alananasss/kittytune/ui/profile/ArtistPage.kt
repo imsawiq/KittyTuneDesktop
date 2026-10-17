@@ -219,21 +219,25 @@ internal fun ArtistHero(
                     }
                     Spacer(Modifier.height(4.dp))
                     val facts = listOfNotNull(
-                        profile?.monthlyListeners?.let(::monthlyListenersLabel),
-                        user.followersCount.takeIf { it > 0 && !profileViewModel.isSpotifyProfile }?.let {
+                        profile?.monthlyListeners?.let { "Spotify · ${monthlyListenersLabel(it)}" },
+                        (if (profileViewModel.isSpotifyProfile) profile?.followers else user.followersCount.toLong())?.takeIf { it > 0 }?.let {
                             "${NumberFormat.getIntegerInstance(com.alananasss.kittytune.core.Strings.locale()).format(it)} ${str("profile_followers")}"
                         },
                         listOfNotNull(user.city, user.countryCode).filter { it.isNotBlank() }.joinToString(", ").takeIf { it.isNotBlank() },
                     )
                     if (facts.isNotEmpty()) {
-                        Text(
-                            facts.joinToString("  ·  "),
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                            color = scheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        com.alananasss.kittytune.ui.common.Tip(
+                            text = profile?.monthlyListeners?.let { "Spotify: ${monthlyListenersLabel(it)}" }.orEmpty(),
+                        ) {
+                            Text(
+                                facts.joinToString("  ·  "),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = scheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                     if (about != null) {
                         Spacer(Modifier.height(6.dp))
@@ -343,13 +347,14 @@ private fun ArtistActions(
             Tip(str("btn_follow")) {
                 FilledTonalIconButton(
                     onClick = { DownloadManager.toggleSaveArtist(user) },
-                    shapes = IconButtonDefaults.shapes(),
+                    shape = CircleShape,
                     modifier = Modifier.size(52.dp),
                 ) {
-                    Icon(
-                        if (isSaved != null) Icons.Rounded.Favorite else Icons.Outlined.FavoriteBorder,
+                    ArtistActionIcon(
+                        selected = isSaved != null,
+                        selectedIcon = Icons.Rounded.Favorite,
+                        unselectedIcon = Icons.Outlined.FavoriteBorder,
                         contentDescription = str("btn_follow"),
-                        tint = if (isSaved != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSecondaryContainer,
                     )
                 }
             }
@@ -361,13 +366,14 @@ private fun ArtistActions(
                         if (isSaved == null) DownloadManager.toggleSaveArtist(user)
                         libraryViewModel.togglePinItem(pinKey)
                     },
-                    shapes = IconButtonDefaults.shapes(),
+                    shape = CircleShape,
                     modifier = Modifier.size(52.dp),
                 ) {
-                    Icon(
-                        if (isPinned) Icons.Rounded.PushPin else Icons.Outlined.PushPin,
-                        contentDescription = null,
-                        tint = if (isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSecondaryContainer,
+                    ArtistActionIcon(
+                        selected = isPinned,
+                        selectedIcon = Icons.Rounded.PushPin,
+                        unselectedIcon = Icons.Outlined.PushPin,
+                        contentDescription = if (isPinned) str("artist_unpin") else str("artist_pin"),
                     )
                 }
             }
@@ -655,16 +661,14 @@ internal sealed interface ArtistRelease {
     }
 
     companion object {
-        /**
-         * The newest of the artist's songs and records, newest first, by release date where one is given and upload
-         * date if not. A song that shares its name with a record is the record's own, so it is listed once.
-         */
+        /** Album members appear under their record, while genuine standalone releases remain visible. */
         fun latestOf(tracks: List<Track>, records: List<Playlist>, count: Int = 2): List<ArtistRelease> {
-            val recordTitles = records.mapNotNull { it.title?.trim()?.lowercase() }.toSet()
-            val candidates = records.map { Record(it) } +
-                tracks.filter { it.title?.trim()?.lowercase() !in recordTitles }.map { Song(it) }
-            val dated = candidates.filter { !it.date.isNullOrBlank() }.sortedByDescending { it.date!!.take(10) }
-            return (dated + candidates.filter { it.date.isNullOrBlank() }).take(count)
+            val distinctRecords = records.distinctBy(com.alananasss.kittytune.data.artist.ReleaseCatalog::recordKey)
+            val candidates = distinctRecords.map { Record(it) } + tracks
+                .distinctBy { "${it.source}:${it.id}" }
+                .filterNot { track -> distinctRecords.any { com.alananasss.kittytune.data.artist.ReleaseCatalog.belongsTo(track, it) } }
+                .map { Song(it) }
+            return candidates.sortedByDescending { ReleaseDate.parse(it.date) ?: java.time.LocalDate.MIN }.take(count.coerceAtLeast(0))
         }
     }
 }
@@ -684,6 +688,7 @@ internal data class ArtistMix(
  */
 @Composable
 internal fun rememberArtistMixes(user: User, profileViewModel: ProfileViewModel): List<ArtistMix> {
+    if (profileViewModel.popularTracks.isEmpty() && profileViewModel.allTracks.isEmpty()) return emptyList()
     val name = user.username.orEmpty()
     val members = remember(name) { ArtistMixes.membersOf(name) }
     val avatar = user.avatarUrl?.takeIf { !it.isDefaultAvatar() }
@@ -722,7 +727,7 @@ internal fun rememberArtistMixes(user: User, profileViewModel: ProfileViewModel)
  */
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-internal fun ArtistMixCard(mix: ArtistMix, accentIndex: Int = 0, onPlay: (List<Track>) -> Unit) {
+internal fun ArtistMixCard(mix: ArtistMix, accentIndex: Int = 0, onOpen: (Long) -> Unit) {
     val scheme = MaterialTheme.colorScheme
     // One of three accents, by place in the row, so neighbours differ; held down to a muted tone below.
     val accent = remember(accentIndex, scheme.primary, scheme.tertiary, scheme.secondary) {
@@ -731,6 +736,7 @@ internal fun ArtistMixCard(mix: ArtistMix, accentIndex: Int = 0, onPlay: (List<T
     val deep = remember(accent) { lerp(Color(0xFF101014), accent, 0.38f) }
     val mid = remember(accent) { lerp(Color(0xFF101014), accent, 0.62f) }
     var isLoading by remember { mutableStateOf(false) }
+    var loadFailed by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
@@ -751,9 +757,18 @@ internal fun ArtistMixCard(mix: ArtistMix, accentIndex: Int = 0, onPlay: (List<T
                     if (isLoading) return@clickable
                     scope.launch {
                         isLoading = true
+                        loadFailed = false
                         try {
                             val tracks = mix.load()
-                            if (tracks.isNotEmpty()) onPlay(tracks)
+                            if (tracks.isNotEmpty()) {
+                                val id = com.alananasss.kittytune.data.mix.GeneratedPlaylists.create(mix.title, tracks, mix.imageUrl)
+                                onOpen(id)
+                            }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            loadFailed = true
+                            e.printStackTrace()
                         } finally {
                             isLoading = false
                         }
@@ -853,6 +868,7 @@ internal fun ArtistMixCard(mix: ArtistMix, accentIndex: Int = 0, onPlay: (List<T
                 }
             }
         Spacer(Modifier.height(8.dp))
+        if (loadFailed) Text(str("error_generic"), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
         Text(
             text = mix.title,
             style = MaterialTheme.typography.bodyMedium,

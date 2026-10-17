@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.OpenInFull
@@ -50,6 +51,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
@@ -108,16 +111,25 @@ fun NowPlayingPanel(
     onTabChange: (NowPlayingTab) -> Unit,
     onClose: () -> Unit,
     onOpenFullLyrics: () -> Unit = {},
+    onOpenEffectsCatalog: (() -> Unit)? = null,
+    effectsCatalogDrag: com.alananasss.kittytune.ui.player.EffectCatalogDragState? = null,
     modifier: Modifier = Modifier,
 ) {
     val vm = playerViewModel
+    androidx.compose.runtime.DisposableEffect(effectsCatalogDrag, tab) {
+        onDispose { effectsCatalogDrag?.targetBounds = null }
+    }
     // The panel going away under the pointer sends no Exit; without this the side buttons stay bound to it.
     androidx.compose.runtime.DisposableEffect(Unit) { onDispose { PanelHistory.pointerInside = false } }
     val track = vm.uiCurrentTrack
     if (track == null && tab != NowPlayingTab.DEVICES) return
 
     Surface(
-        modifier = modifier,
+        modifier = modifier.onGloballyPositioned {
+            effectsCatalogDrag?.targetBounds = if (tab == NowPlayingTab.EFFECTS) it.boundsInWindow() else null
+        },
+        border = if (effectsCatalogDrag?.draggedId != null && tab == NowPlayingTab.EFFECTS)
+            androidx.compose.foundation.BorderStroke(2.dp, if (effectsCatalogDrag.isOverTarget) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline) else null,
         shape = PanelShape,
         color = MaterialTheme.colorScheme.surfaceContainerLow,
     ) {
@@ -210,7 +222,7 @@ fun NowPlayingPanel(
                 when (page) {
                     NowPlayingTab.QUEUE -> QueueList(vm)
                     NowPlayingTab.LYRICS -> LyricsPreview(vm, onOpenFullLyrics)
-                    NowPlayingTab.EFFECTS -> com.alananasss.kittytune.ui.player.EffectsPanel(vm)
+                    NowPlayingTab.EFFECTS -> com.alananasss.kittytune.ui.player.EffectsPanel(vm, onOpenCatalog = onOpenEffectsCatalog)
                     NowPlayingTab.DEVICES -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp)) {
                         com.alananasss.kittytune.ui.profile.ConnectPanel()
                     }
@@ -288,10 +300,12 @@ private fun LyricsPreview(vm: PlayerViewModel, onOpenFullLyrics: () -> Unit) {
 /** A small round action of the panel's own: tonal, with its name in a tooltip. One shape for all of them. */
 @Composable
 internal fun PanelToolButton(icon: ImageVector, label: String, onClick: () -> Unit, isActive: Boolean = false) {
+    val interaction = remember { MutableInteractionSource() }
     val scheme = MaterialTheme.colorScheme
     Tip(label, instant = true) {
         androidx.compose.material3.FilledTonalIconButton(
             onClick = onClick,
+            interactionSource = interaction,
             shapes = IconButtonDefaults.shapes(),
             colors = IconButtonDefaults.filledTonalIconButtonColors(
                 containerColor = if (isActive) scheme.secondaryContainer else scheme.surfaceContainerHigh,
@@ -299,7 +313,14 @@ internal fun PanelToolButton(icon: ImageVector, label: String, onClick: () -> Un
             ),
             modifier = Modifier.size(PANEL_TOOL_SIZE),
         ) {
-            Icon(icon, contentDescription = label, modifier = Modifier.size(18.dp))
+            if (icon == Icons.Rounded.Shuffle) {
+                com.alananasss.kittytune.ui.common.animation.AnimatedShuffleIcon(
+                    active = isActive,
+                    interactionSource = interaction,
+                    contentDescription = label,
+                    modifier = Modifier.size(18.dp),
+                )
+            } else Icon(icon, contentDescription = label, modifier = Modifier.size(18.dp))
         }
     }
 }

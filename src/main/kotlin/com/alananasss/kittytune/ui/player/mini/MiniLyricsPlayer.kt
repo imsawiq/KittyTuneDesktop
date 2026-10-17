@@ -818,7 +818,7 @@ private fun MiniLyricsContent(
     val lyrics = viewModel.lyricsLines
     // positionMs is a lambda so this composable doesn't recompose on every position tick (4–5×/sec).
     // The smooth position is read via State<Float> in the draw phase only (audit Phase 3 CPU gain).
-    val smoothPosition = com.alananasss.kittytune.ui.player.lyrics.rememberSmoothPosition(
+    val smoothPosition = com.alananasss.kittytune.ui.player.lyrics.timing.rememberSmoothPosition(
         positionMs = { viewModel.uiCurrentPosition },
         isPlaying = isPlaying,
         speed = 1.0f,
@@ -1071,7 +1071,7 @@ private fun MiniLyricsElongatedContent(
     val lyrics = viewModel.lyricsLines
     // positionMs is a lambda so this composable doesn't recompose on every position tick (4–5×/sec).
     // The smooth position is read via State<Float> in the draw phase only (audit Phase 3 CPU gain).
-    val smoothPosition = com.alananasss.kittytune.ui.player.lyrics.rememberSmoothPosition(
+    val smoothPosition = com.alananasss.kittytune.ui.player.lyrics.timing.rememberSmoothPosition(
         positionMs = { viewModel.uiCurrentPosition },
         isPlaying = isPlaying,
         speed = 1.0f,

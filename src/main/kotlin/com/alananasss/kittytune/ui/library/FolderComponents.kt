@@ -421,16 +421,21 @@ private fun FolderOptionItem(
     tint: Color = MaterialTheme.colorScheme.onSurface,
     onClick: () -> Unit
 ) {
+    val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
+            .clickable(interactionSource = interaction, indication = ripple(), onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+        if (icon == Icons.Rounded.Shuffle) {
+            com.alananasss.kittytune.ui.common.animation.AnimatedShuffleIcon(
+                interactionSource = interaction, tint = tint, modifier = Modifier.size(20.dp),
+            )
+        } else Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
         Text(label, color = tint, style = MaterialTheme.typography.bodyMedium)
     }
 }
@@ -509,13 +514,12 @@ fun FolderPlaySplitButton(
                     )
                 }
             )
+            val shuffleInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             DropdownMenuItem(
+                interactionSource = shuffleInteraction,
                 text = { Text(str("lib_folder_play_shuffle")) },
                 leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Rounded.Shuffle,
-                        contentDescription = null
-                    )
+                    com.alananasss.kittytune.ui.common.animation.AnimatedShuffleIcon(interactionSource = shuffleInteraction)
                 },
                 onClick = {
                     isMenuExpanded = false
@@ -546,13 +550,12 @@ fun FolderPlaySplitButton(
                     )
                 }
             )
+            val recursiveShuffleInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
             DropdownMenuItem(
+                interactionSource = recursiveShuffleInteraction,
                 text = { Text(str("lib_folder_play_recursive_shuffle")) },
                 leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Rounded.Shuffle,
-                        contentDescription = null
-                    )
+                    com.alananasss.kittytune.ui.common.animation.AnimatedShuffleIcon(interactionSource = recursiveShuffleInteraction)
                 },
                 onClick = {
                     isMenuExpanded = false
@@ -853,14 +856,22 @@ fun LibraryPlaylistOptionsDialog(
                     modifier = Modifier.heightIn(max = 420.dp)
                 ) {
                     items(gridItems) { item ->
+                        val interaction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(12.dp))
-                                .clickable { item.onClick() }
+                                .clickable(interactionSource = interaction, indication = ripple()) { item.onClick() }
                                 .padding(vertical = 6.dp)
                         ) {
-                            Icon(
+                            if (item.icon == Icons.Rounded.Shuffle) {
+                                com.alananasss.kittytune.ui.common.animation.AnimatedShuffleIcon(
+                                    interactionSource = interaction,
+                                    contentDescription = item.text,
+                                    modifier = Modifier.size(30.dp),
+                                    tint = item.tint ?: MaterialTheme.colorScheme.onSurface,
+                                )
+                            } else Icon(
                                 item.icon,
                                 contentDescription = item.text,
                                 modifier = Modifier.size(30.dp),

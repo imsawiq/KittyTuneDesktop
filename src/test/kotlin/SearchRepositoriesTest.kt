@@ -129,6 +129,7 @@ class SearchRepositoriesTest {
 
     @Test
     fun testQobuzResolutionWithRealInstance() {
+        org.junit.Assume.assumeTrue("External Qobuz integration: run with -PliveNetworkTests=true", java.lang.Boolean.getBoolean("kittytune.liveNetworkTests"))
         val query = com.alananasss.kittytune.audio.providers.qobuz.QobuzAudioProvider.Query(
             mediaId = "test_media_1",
             title = "Creep",
@@ -149,6 +150,7 @@ class SearchRepositoriesTest {
 
     @Test
     fun testQobuzDirectTrackResolution() {
+        org.junit.Assume.assumeTrue("External Qobuz integration: run with -PliveNetworkTests=true", java.lang.Boolean.getBoolean("kittytune.liveNetworkTests"))
         val query = com.alananasss.kittytune.audio.providers.qobuz.QobuzAudioProvider.Query(
             mediaId = "qobuz:track:33933680",
             title = "Creep",
@@ -169,6 +171,7 @@ class SearchRepositoriesTest {
 
     @Test
     fun testQobuzSearchRepository() = kotlinx.coroutines.runBlocking {
+        org.junit.Assume.assumeTrue("External Qobuz integration: run with -PliveNetworkTests=true", java.lang.Boolean.getBoolean("kittytune.liveNetworkTests"))
         val searchResult = com.alananasss.kittytune.data.qobuz.QobuzSearchRepository.search("Daft Punk")
         assertNotNull(searchResult)
         org.junit.Assert.assertTrue(searchResult.tracks.isNotEmpty())

@@ -13,9 +13,14 @@ internal object UpdateDownloadPolicy {
     fun resumeOffset(requestedOffset: Long, responseCode: Int, contentRange: String?): Long {
         if (responseCode == 200) return 0L // Server ignored Range: replace instead of appending.
         require(responseCode == 206 && requestedOffset > 0) { "Unexpected download response" }
-        val start = contentRange?.let { Regex("bytes (\\d+)-\\d+/[\\d*]+").matchEntire(it) }
-            ?.groupValues?.get(1)?.toLongOrNull()
-        require(start == requestedOffset) { "Update server returned an invalid byte range" }
+        val range = contentRange?.let { Regex("bytes (\\d+)-(\\d+)/(\\d+|\\*)").matchEntire(it) }
+        val start = range?.groupValues?.get(1)?.toLongOrNull()
+        val end = range?.groupValues?.get(2)?.toLongOrNull()
+        val total = range?.groupValues?.get(3)?.takeUnless { it == "*" }?.toLongOrNull()
+        require(start == requestedOffset && end != null && end >= requestedOffset &&
+            (range?.groupValues?.get(3) == "*" || (total != null && total > end))) {
+            "Update server returned an invalid byte range"
+        }
         return requestedOffset
     }
 

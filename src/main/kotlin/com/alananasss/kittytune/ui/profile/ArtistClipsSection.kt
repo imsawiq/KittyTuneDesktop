@@ -1,5 +1,12 @@
 package com.alananasss.kittytune.ui.profile
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -17,7 +24,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -40,14 +46,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
@@ -58,28 +68,29 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindow
+import androidx.compose.ui.window.rememberDialogState
 import coil3.compose.AsyncImage
 import com.alananasss.kittytune.core.BackHandler
 import com.alananasss.kittytune.data.artist.ArtistClips
 import com.alananasss.kittytune.data.artist.Clip
+import com.alananasss.kittytune.data.artist.ClipStream
 import com.alananasss.kittytune.media.ClipPlayback
 import com.alananasss.kittytune.ui.home.formatCompactNumber
 import com.alananasss.kittytune.ui.player.PlayerViewModel
@@ -106,20 +117,55 @@ internal fun ArtistClipsSection(artistName: String, playerViewModel: PlayerViewM
     watching?.let { clip -> ClipPlayerDialog(clip, playerViewModel, onDismiss = { watching = null }) }
 }
 
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 internal fun ClipCard(clip: Clip, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
+    val scope = rememberCoroutineScope()
+    val preview = remember(clip.url) { ClipPlayback(scope, mutedPreview = true) }
+    val isWindowSeen = com.alananasss.kittytune.core.LocalWindowSeen.current
+    var hovered by remember { mutableStateOf(false) }
+    LaunchedEffect(hovered, isWindowSeen, ClipPreviews.activeUrl) {
+        if (!hovered || !isWindowSeen || ClipPreviews.activeUrl != clip.url) return@LaunchedEffect
+        delay(450L)
+        ClipPreviews.decoder.withLock {
+            try {
+                withTimeoutOrNull(20_000L) {
+                    val streams = ArtistClips.streams(clip)
+                    val stream = streams.filter { it.height in 1..360 }.maxByOrNull { it.height }
+                        ?: streams.minByOrNull { it.height }
+                        ?: return@withTimeoutOrNull
+                    preview.play(stream.url)
+                    while (preview.isLoading) delay(40L)
+                    delay(10_000L)
+                }
+            } finally {
+                withContext(NonCancellable) { preview.stopAndJoin() }
+            }
+        }
+    }
+    DisposableEffect(preview) { onDispose { preview.stop() } }
     Column(Modifier.width(CLIP_CARD_WIDTH)) {
         Box(
             Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
+                .onPointerEvent(PointerEventType.Enter) { hovered = true; ClipPreviews.activeUrl = clip.url }
+                .onPointerEvent(PointerEventType.Exit) { hovered = false; if (ClipPreviews.activeUrl == clip.url) ClipPreviews.activeUrl = null }
                 .pressScale(interaction)
                 .clip(RoundedCornerShape(18.dp))
                 .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                .clickable(interactionSource = interaction, indication = androidx.compose.material3.ripple(), onClick = onClick),
+                .clickable(interactionSource = interaction, indication = androidx.compose.material3.ripple(), onClick = {
+                    hovered = false
+                    ClipPreviews.activeUrl = null
+                    preview.stop()
+                    onClick()
+                }),
         ) {
             AsyncImage(model = clip.thumbnailUrl, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            preview.frame?.let { frame ->
+                androidx.compose.foundation.Image(frame, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            }
             Box(
                 Modifier.align(Alignment.Center).size(48.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.55f)),
                 contentAlignment = Alignment.Center,
@@ -151,7 +197,7 @@ internal fun ClipCard(clip: Clip, onClick: () -> Unit) {
 }
 
 /** A clip playing over the page. The music pauses while it plays and carries on afterwards if it was playing. */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 internal fun ClipPlayerDialog(clip: Clip, playerViewModel: PlayerViewModel, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
@@ -159,11 +205,27 @@ internal fun ClipPlayerDialog(clip: Clip, playerViewModel: PlayerViewModel, onDi
     var hasNoStream by remember(clip) { mutableStateOf(false) }
 
     var fullscreen by remember { mutableStateOf(false) }
-    // The dialog's own window is put into fullscreen via the screen device and given its old size back afterwards;
-    // Escape and the back button leave full screen first and close the clip only from the window.
+    var streams by remember(clip) { mutableStateOf(emptyList<ClipStream>()) }
+    var selectedStream by remember(clip) { mutableStateOf<ClipStream?>(null) }
+    var controlsVisible by remember { mutableStateOf(true) }
+    var controlsHovered by remember { mutableStateOf(false) }
+    var qualityMenuOpen by remember { mutableStateOf(false) }
+    var lastInteraction by remember { mutableStateOf(0L) }
+    val entrance = remember { Animatable(0f) }
+    LaunchedEffect(fullscreen) {
+        controlsHovered = false
+        entrance.snapTo(0f)
+        entrance.animateTo(1f, tween(260))
+    }
+    LaunchedEffect(fullscreen, playback.isPaused, controlsHovered, qualityMenuOpen, lastInteraction) {
+        controlsVisible = true
+        if (fullscreen && !playback.isPaused && !controlsHovered && !qualityMenuOpen) {
+            delay(2_800L)
+            controlsVisible = false
+        }
+    }
     val windowBefore = remember { arrayOfNulls<java.awt.Rectangle>(1) }
     val windowRef = remember { arrayOfNulls<java.awt.Window>(1) }
-    val deviceRef = remember { arrayOfNulls<java.awt.GraphicsDevice>(1) }
 
     DisposableEffect(clip) {
         // Watching something else leaves a shared playlist, the way playing your own music does; otherwise the
@@ -172,72 +234,58 @@ internal fun ClipPlayerDialog(clip: Clip, playerViewModel: PlayerViewModel, onDi
         val wasPlaying = playerViewModel.isPlaying
         playerViewModel.pause()
         onDispose {
-            runCatching {
-                val d = deviceRef[0]
-                val w = windowRef[0]
-                if (d != null && d.fullScreenWindow == w) {
-                    d.fullScreenWindow = null
-                }
-                windowBefore[0]?.let { bounds ->
-                    w?.bounds = bounds
-                }
-            }
+            windowBefore[0]?.let { bounds -> windowRef[0]?.bounds = bounds }
             playback.stop()
             if (wasPlaying) playerViewModel.play()
         }
     }
     LaunchedEffect(clip) {
-        val url = ArtistClips.streamUrl(clip)
-        if (url == null) hasNoStream = true else playback.play(url)
+        streams = ArtistClips.streams(clip)
+        selectedStream = ArtistClips.defaultStream(streams)
+        val stream = selectedStream
+        if (stream == null) hasNoStream = true else playback.play(stream.url, stream.audioUrl)
     }
-
-    LaunchedEffect(fullscreen) {
-        val window = java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager().activeWindow
-            ?: java.awt.Window.getWindows().firstOrNull { it.isShowing && it is javax.swing.JDialog }
-            ?: java.awt.Window.getWindows().lastOrNull { it.isShowing }
-            ?: return@LaunchedEffect
-        val device = window.graphicsConfiguration?.device
-        if (fullscreen) {
-            windowRef[0] = window
-            deviceRef[0] = device
-            windowBefore[0] = window.bounds
-            if (device != null && device.isFullScreenSupported) {
-                device.fullScreenWindow = window
-            } else {
-                window.bounds = window.graphicsConfiguration.bounds
-            }
-            window.toFront()
-            window.requestFocus()
-        } else {
-            val d = deviceRef[0] ?: device
-            val w = windowRef[0] ?: window
-            if (d?.fullScreenWindow == w) {
-                d.fullScreenWindow = null
-            }
-            windowBefore[0]?.let { bounds ->
-                w?.bounds = bounds
-            }
-            windowBefore[0] = null
-            deviceRef[0] = null
-            windowRef[0] = null
+    val selectQuality: (ClipStream) -> Unit = { stream ->
+        if (stream != selectedStream) {
+            selectedStream = stream
+            playback.play(stream.url, stream.audioUrl, playback.positionMs, playback.isPaused)
         }
+        qualityMenuOpen = false
     }
-    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
-
     BackHandler(onBack = { if (fullscreen) fullscreen = false else onDismiss() })
-    Dialog(onDismissRequest = { if (fullscreen) fullscreen = false else onDismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    DialogWindow(
+        onCloseRequest = { if (fullscreen) fullscreen = false else onDismiss() },
+        title = clip.title,
+        state = rememberDialogState(width = 960.dp, height = 650.dp),
+        undecorated = true,
+        transparent = true,
+        onPreviewKeyEvent = { event ->
+            if (event.type == KeyEventType.KeyDown && event.key == Key.Escape) {
+                if (fullscreen) fullscreen = false else onDismiss()
+                true
+            } else false
+        },
+    ) {
+        // Borderless fullscreen stays on this monitor when another application gains focus.
+        // Exclusive GraphicsDevice fullscreen deactivates and minimizes dialogs on Windows.
+        LaunchedEffect(fullscreen, window) {
+            windowRef[0] = window
+            if (fullscreen) {
+                windowBefore[0] = window.bounds
+                window.bounds = window.graphicsConfiguration.bounds
+            } else {
+                windowBefore[0]?.let { window.bounds = it }
+                windowBefore[0] = null
+            }
+        }
         Surface(
             shape = if (fullscreen) RectangleShape else RoundedCornerShape(28.dp),
             color = if (fullscreen) Color.Black else MaterialTheme.colorScheme.surfaceContainerHigh,
-            modifier = (if (fullscreen) Modifier.fillMaxSize() else Modifier.widthIn(max = 960.dp).fillMaxWidth(0.86f))
-                .focusRequester(focus)
-                .onPreviewKeyEvent { event ->
-                    if (event.type == KeyEventType.KeyDown && event.key == Key.Escape) {
-                        if (fullscreen) fullscreen = false else onDismiss()
-                        true
-                    } else false
-                },
+            modifier = Modifier.fillMaxSize().graphicsLayer {
+                alpha = 0.7f + entrance.value * 0.3f
+                scaleX = 0.985f + entrance.value * 0.015f
+                scaleY = scaleX
+            },
         ) {
             Column(Modifier.padding(if (fullscreen) 0.dp else 16.dp), verticalArrangement = Arrangement.spacedBy(if (fullscreen) 0.dp else 12.dp)) {
                 if (!fullscreen) Row(verticalAlignment = Alignment.CenterVertically) {
@@ -252,6 +300,8 @@ internal fun ClipPlayerDialog(clip: Clip, playerViewModel: PlayerViewModel, onDi
                 Box(
                     (if (fullscreen) Modifier.fillMaxWidth().weight(1f) else Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(18.dp)))
                         .background(Color.Black)
+                        .onPointerEvent(PointerEventType.Move) { lastInteraction = System.nanoTime() }
+                        .onPointerEvent(PointerEventType.Press) { lastInteraction = System.nanoTime() }
                         .pointerInput(playback.isLoading) {
                             detectTapGestures(
                                 onDoubleTap = { fullscreen = !fullscreen },
@@ -270,9 +320,29 @@ internal fun ClipPlayerDialog(clip: Clip, playerViewModel: PlayerViewModel, onDi
                         hasNoStream || playback.hasFailed -> Text(str("artist_clip_failed"), color = Color.White, style = MaterialTheme.typography.bodyLarge)
                         playback.isLoading -> ContainedLoadingIndicator(Modifier.size(56.dp))
                     }
+                    if (fullscreen) {
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = controlsVisible,
+                            enter = fadeIn(tween(220)) + slideInVertically(tween(220)) { it / 4 },
+                            exit = fadeOut(tween(260)) + slideOutVertically(tween(260)) { it / 4 },
+                            modifier = Modifier.align(Alignment.BottomCenter),
+                        ) {
+                            Box(
+                                Modifier.fillMaxWidth()
+                                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f))))
+                                    .onPointerEvent(PointerEventType.Enter) { controlsHovered = true }
+                                    .onPointerEvent(PointerEventType.Exit) { controlsHovered = false }
+                                    .padding(start = 20.dp, end = 20.dp, top = 40.dp, bottom = 20.dp),
+                            ) {
+                                MaterialTheme(colorScheme = androidx.compose.material3.darkColorScheme()) {
+                                    ClipControls(playback, true, streams, selectedStream, qualityMenuOpen, { qualityMenuOpen = it }, selectQuality) { fullscreen = false }
+                                }
+                            }
+                        }
+                    }
                 }
-                Box(if (fullscreen) Modifier.padding(16.dp) else Modifier) {
-                    ClipControls(playback, fullscreen, onToggleFullscreen = { fullscreen = !fullscreen })
+                if (!fullscreen) {
+                    ClipControls(playback, false, streams, selectedStream, qualityMenuOpen, { qualityMenuOpen = it }, selectQuality) { fullscreen = true }
                 }
             }
         }
@@ -281,7 +351,16 @@ internal fun ClipPlayerDialog(clip: Clip, playerViewModel: PlayerViewModel, onDi
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun ClipControls(playback: ClipPlayback, fullscreen: Boolean, onToggleFullscreen: () -> Unit) {
+private fun ClipControls(
+    playback: ClipPlayback,
+    fullscreen: Boolean,
+    streams: List<ClipStream>,
+    selectedStream: ClipStream?,
+    qualityMenuOpen: Boolean,
+    onQualityMenuChange: (Boolean) -> Unit,
+    onSelectQuality: (ClipStream) -> Unit,
+    onToggleFullscreen: () -> Unit,
+) {
     var dragged by remember { mutableStateOf<Float?>(null) }
     val duration = playback.durationMs.coerceAtLeast(1L)
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -321,6 +400,16 @@ private fun ClipControls(playback: ClipPlayback, fullscreen: Boolean, onToggleFu
             // And over the volume, five per cent a notch.
             modifier = Modifier.width(110.dp).wheelSteps { notches -> playback.volume = (playback.volume - notches * 0.05f).coerceIn(0f, 1f) },
         )
+        Box {
+            TextButton(onClick = { onQualityMenuChange(true) }, enabled = streams.isNotEmpty()) {
+                Text(selectedStream?.label ?: str("artist_clip_quality"))
+            }
+            DropdownMenu(expanded = qualityMenuOpen, onDismissRequest = { onQualityMenuChange(false) }) {
+                streams.forEach { stream ->
+                    DropdownMenuItem(text = { Text(stream.label) }, onClick = { onSelectQuality(stream) })
+                }
+            }
+        }
         IconButton(onClick = onToggleFullscreen, shapes = IconButtonDefaults.shapes()) {
             Icon(if (fullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen, contentDescription = null)
         }
@@ -378,3 +467,9 @@ internal fun HomeClipsShelf(
     watching?.let { clip -> ClipPlayerDialog(clip, playerViewModel, onDismiss = { watching = null }) }
 }
 
+
+/** At most one hover decoder, including native shutdown before another preview starts. */
+private object ClipPreviews {
+    var activeUrl by mutableStateOf<String?>(null)
+    val decoder = Mutex()
+}

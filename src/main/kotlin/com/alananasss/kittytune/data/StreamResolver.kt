@@ -215,6 +215,9 @@ object StreamResolver {
             track.isSnipped
     }
 
+    /** Format of an actually resolved stream; catalog presence alone does not imply lossless audio. */
+    fun cachedMimeType(trackId: Long): String? = streamCache[trackId]?.takeIf { it.isUsable() }?.stream?.mimeType
+
     suspend fun resolveStream(track: Track, forDownload: Boolean = false): String? {
         return resolveStreamWithDrm(track, forDownload)?.url
     }
@@ -446,7 +449,7 @@ object StreamResolver {
                         val resolved = QobuzAudioProvider.resolve(query)
                         if (resolved != null && resolved.mediaUri.isNotBlank()) {
                             Logger.i("StreamResolver", "Using Qobuz stream for '${track.title}': ${resolved.label}")
-                            return ResolvedStream(resolved.mediaUri, mimeType = "audio/mp4", source = "qobuz")
+                            return ResolvedStream(resolved.mediaUri, mimeType = resolved.mimeType, source = "qobuz")
                         }
                     }
                     AudioProviderOrderItem.TIDAL -> {

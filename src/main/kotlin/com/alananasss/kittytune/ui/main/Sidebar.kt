@@ -1527,7 +1527,9 @@ private fun androidx.compose.foundation.layout.ColumnScope.LibraryContent(
                 state = compactListState
             ) {
                 items(entries, key = { it.key }) { entry ->
-                    CompactListRow(entry, collapse = collapse, onRightClick = onRightClick(entry)) { onOpen(entry) }
+                    Box(Modifier.animateItem()) {
+                        CompactListRow(entry, collapse = collapse, onRightClick = onRightClick(entry)) { onOpen(entry) }
+                    }
                 }
             }
 
@@ -1537,7 +1539,9 @@ private fun androidx.compose.foundation.layout.ColumnScope.LibraryContent(
                 state = listState
             ) {
                 items(entries, key = { it.key }) { entry ->
-                    LibraryRow(entry, collapse = collapse, onRightClick = onRightClick(entry)) { onOpen(entry) }
+                    Box(Modifier.animateItem()) {
+                        LibraryRow(entry, collapse = collapse, onRightClick = onRightClick(entry)) { onOpen(entry) }
+                    }
                 }
             }
 
@@ -1551,6 +1555,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.LibraryContent(
             ) {
                 items(entries.size, key = { entries[it].key }) { index ->
                     val entry = entries[index]
+                    Box(Modifier.animateItem()) {
                     Tip(entry.title) {
                         EntryArtwork(
                             entry = entry,
@@ -1560,6 +1565,7 @@ private fun androidx.compose.foundation.layout.ColumnScope.LibraryContent(
                             onClick = { onOpen(entry) },
                             onRightClick = onRightClick(entry),
                         )
+                    }
                     }
                 }
             }
@@ -1572,7 +1578,9 @@ private fun androidx.compose.foundation.layout.ColumnScope.LibraryContent(
             ) {
                 items(entries.size, key = { entries[it].key }) { index ->
                     val entry = entries[index]
-                    GridCell(entry, onRightClick = onRightClick(entry)) { onOpen(entry) }
+                    Box(Modifier.animateItem()) {
+                        GridCell(entry, onRightClick = onRightClick(entry)) { onOpen(entry) }
+                    }
                 }
             }
         }

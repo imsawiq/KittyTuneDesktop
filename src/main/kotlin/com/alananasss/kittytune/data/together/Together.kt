@@ -133,6 +133,8 @@ object Together {
     private var lastSentQueueVersion = -1
     private var queueVersion = 0
     private var lastUpcomingIds: List<Long> = emptyList()
+    private val lastStateAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private var incomingJob: Job? = null
 
     fun isHostOf(code: String): Boolean = _rooms.value[code]?.hostId == memberId
 
@@ -143,17 +145,17 @@ object Together {
         this.player = player
         if (started) return
         started = true
-        scope.launch {
-            _saved.value.forEach { follow(it) }
-            relay.incoming.collect { handle(it.code, it.message) }
-        }
+        incomingJob = scope.launch { relay.incoming.collect { handle(it.code, it.message) } }
+        scope.launch { _saved.value.forEach { follow(it) } }
         tickJob = scope.launch {
             var lastHello = 0L
             while (isActive) {
                 val now = System.currentTimeMillis()
                 if (now - lastHello >= HELLO_EVERY_MS) {
                     lastHello = now
-                    _active.value?.let { send(it, TogetherMessage.Hello(memberId, now, myName, isListening = true)) }
+                    _saved.value.forEach { saved ->
+                        send(saved.code, TogetherMessage.Hello(memberId, now, myName, isListening = _active.value == saved.code))
+                    }
                 }
                 _active.value?.let { code -> if (isHostOf(code)) publishState(code) }
                 delay(STATE_EVERY_MS)
@@ -274,6 +276,26 @@ object Together {
         publishQueue(code, force = true)
     }
 
+    fun mayEditPlaylist(code: String): Boolean = isHostOf(code) || _rooms.value[code]?.hasLiveHost != true
+
+    fun movePlaylistTrack(code: String, from: Int, to: Int) {
+        if (!mayEditPlaylist(code)) return
+        updateRoom(code) { room ->
+            if (from !in room.playlist.indices || to !in room.playlist.indices) room
+            else room.copy(playlist = room.playlist.toMutableList().apply { add(to, removeAt(from)) })
+        }
+        publishQueue(code, force = true)
+    }
+
+    fun removePlaylistTrack(code: String, index: Int) {
+        if (!mayEditPlaylist(code)) return
+        updateRoom(code) { room ->
+            if (index !in room.playlist.indices) room
+            else room.copy(playlist = room.playlist.filterIndexed { i, _ -> i != index })
+        }
+        publishQueue(code, force = true)
+    }
+
     /** A pause, play, seek, skip from this listener: the host applies it, a member asks the host. */
     fun control(action: String, positionMs: Long) {
         val code = _active.value ?: return
@@ -318,17 +340,16 @@ object Together {
     }
 
     private fun publishQueue(code: String, force: Boolean) {
-        val p = player ?: return
-        val upcoming = p.sharedUpcoming().take(MAX_SHARED_UPCOMING)
+        val room = _rooms.value[code] ?: return
+        val upcoming = if (_active.value == code && isHostOf(code)) player?.sharedUpcoming().orEmpty().take(MAX_SHARED_UPCOMING) else room.upcoming
         val ids = upcoming.map { it.id }
         val version = synchronized(queueStateLock) {
             if (!force && ids == lastUpcomingIds && lastSentQueueVersion == queueVersion) return
-            if (ids != lastUpcomingIds) queueVersion++
+            if (force || ids != lastUpcomingIds) queueVersion = maxOf(queueVersion, room.queueVersion) + 1
             lastUpcomingIds = ids
             lastSentQueueVersion = queueVersion
             queueVersion
         }
-        val room = _rooms.value[code] ?: Room(code, "")
         updateRoom(code) { it.copy(upcoming = upcoming, queueVersion = version) }
         send(code, TogetherMessage.Queue(memberId, System.currentTimeMillis(), version, upcoming, room.playlist, room.name))
     }
@@ -357,6 +378,12 @@ object Together {
                 if (newer) r.copy(hostId = message.from, hostSeenAt = now, hostClaimedAt = message.sentAt) else r
             }
             is TogetherMessage.State -> {
+                val existing = _rooms.value[code]
+                if (!TogetherPlaybackPolicy.acceptsHost(existing?.takeIf { it.hasLiveHost }?.hostId, message.from)) return
+                val stateKey = "$code:${message.from}"
+                val previous = lastStateAt[stateKey]
+                if (previous != null && message.sentAt < previous) return
+                lastStateAt[stateKey] = message.sentAt
                 updateRoom(code) { it.copy(hostId = message.from, hostSeenAt = now, nowPlaying = message.track, isPlaying = message.isPlaying, automix = message.automix) }
                 if (_active.value == code && !isHostOf(code)) {
                     val room = _rooms.value[code]
@@ -364,21 +391,26 @@ object Together {
                     val track = message.track ?: return
                     val drift = if (message.isPlaying) flightTime(message.from, now - message.sentAt) else 0L
                     // Never past the end of the song, whatever the host's report says.
-                    val target = (message.positionMs + drift).coerceAtLeast(0L).let { p -> track.durationMs?.takeIf { it > 0 }?.let { p.coerceAtMost(it) } ?: p }
+                    val target = TogetherPlaybackPolicy.position(message.positionMs, track.durationMs, drift)
                     kotlinx.coroutines.withContext(Dispatchers.Main) {
                         player?.followHost(track, target, message.isPlaying, room?.upcoming, message.automix)
                     }
                 }
             }
-            is TogetherMessage.Queue -> updateRoom(code) { r ->
-                r.copy(
-                    upcoming = message.upcoming,
-                    playlist = if (message.playlist.isNotEmpty() || r.playlist.isEmpty()) message.playlist else r.playlist,
+            is TogetherMessage.Queue -> {
+                val existing = _rooms.value[code]
+                if (!TogetherPlaybackPolicy.acceptsHost(existing?.takeIf { it.hasLiveHost }?.hostId, message.from)) return
+                if (existing?.hostId == message.from && message.version < existing.queueVersion) return
+                updateRoom(code) { r -> r.copy(
+                    upcoming = message.upcoming.take(MAX_SHARED_UPCOMING),
+                    playlist = message.playlist,
                     name = message.name.ifBlank { r.name },
                     queueVersion = message.version,
-                )
-            }.also { renameSaved(code, message.name) }
+                ) }
+                renameSaved(code, message.name)
+            }
             is TogetherMessage.SyncRequest -> {
+                send(code, TogetherMessage.Hello(memberId, now, myName, isListening = _active.value == code))
                 val room = _rooms.value[code]
                 if (isHostOf(code)) {
                     publishQueue(code, force = true)
@@ -395,7 +427,7 @@ object Together {
             }
             is TogetherMessage.SuggestionDone -> updateRoom(code) { r -> r.copy(suggestions = r.suggestions.filterNot { it.track.id == message.trackId }) }
             is TogetherMessage.Control -> if (isHostOf(code)) kotlinx.coroutines.withContext(Dispatchers.Main) {
-                player?.hostControl(message.action, message.positionMs)
+                player?.hostControl(message.action, TogetherPlaybackPolicy.position(message.positionMs, player?.sharedCurrent()?.durationMs))
             }
         }
     }
@@ -457,6 +489,9 @@ object Together {
         tickJob?.cancel()
         tickJob = null
         quickestTrip.clear()
+        lastStateAt.clear()
+        incomingJob?.cancel()
+        incomingJob = null
         Prefs.remove(KEY_SAVED)
     }
 
@@ -471,6 +506,8 @@ object Together {
         started = false
         tickJob?.cancel()
         tickJob = null
+        incomingJob?.cancel()
+        incomingJob = null
         scope.launch { relay.close() }
         player = null
     }

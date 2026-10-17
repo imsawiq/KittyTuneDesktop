@@ -1,5 +1,7 @@
 package com.alananasss.kittytune.data
 
+import com.alananasss.kittytune.data.download.DownloadAudioFormat
+
 import com.alananasss.kittytune.core.AppDirs
 import com.alananasss.kittytune.core.str
 import com.alananasss.kittytune.data.local.*
@@ -931,21 +933,18 @@ object DownloadManager {
                     _downloadProgress.update { it + (track.id to 0) }
 
                 val resolvedStream = StreamResolver.resolveStreamWithDrm(track, forDownload = true)
-                val streamUrl = resolvedStream?.url ?: throw Exception("Cannot resolve stream URL for download")
+                    ?: throw Exception("Cannot resolve stream URL for download")
+                val streamUrl = resolvedStream.url
 
-                val isHlsStream = streamUrl.contains(".m3u8") || streamUrl.contains("hls")
+                val isHlsStream = DownloadAudioFormat.isHls(resolvedStream.mimeType, streamUrl)
+                val streamFormat = DownloadAudioFormat.forStream(resolvedStream.mimeType, streamUrl, isHlsStream)
 
-                val isYoutubeStream = streamUrl.contains("googlevideo.com") || track.source == "youtube"
-                val ext = if (isYoutubeStream || isHlsStream) "m4a" else "mp3"
-                val mime = if (isYoutubeStream || isHlsStream) "audio/mp4" else "audio/mpeg"
-
-                tempAudioFile = File(AppDirs.audioCacheDir, "temp_${track.id}.$ext")
+                tempAudioFile = File(AppDirs.audioCacheDir, "temp_${track.id}.${streamFormat.extension}")
                 tempImageFile = File(AppDirs.audioCacheDir, "temp_art_${track.id}.jpg")
-                taggedAudioFile = File(AppDirs.audioCacheDir, "tagged_${track.id}.$ext")
                 val internalArtFile = File(AppDirs.imageCacheDir, "art_${track.id}.jpg")
 
                 if (isHlsStream) {
-                    // Plain HLS: remux to .m4a with FFmpeg (no re-encode). DRM HLS was filtered out.
+                    // The current HLS path produces AAC in an M4A container; direct FLAC/WebM files stay intact.
                     remuxHls(streamUrl, tempAudioFile) { p ->
                         if (isActive) _downloadProgress.update { c -> c + (track.id to p) }
                     }
@@ -973,7 +972,11 @@ object DownloadManager {
                         tempImageFile.copyTo(internalArtFile, overwrite = true)
                     }
                 }
-                if (ext == "mp3") {
+                // Trust the downloaded container signature over an incorrect server MIME/URL suffix.
+                val storedFormat = DownloadAudioFormat.sniff(tempAudioFile) ?: streamFormat
+                val ext = storedFormat.extension
+                taggedAudioFile = File(AppDirs.audioCacheDir, "tagged_${track.id}.$ext")
+                if (storedFormat == DownloadAudioFormat.MP3) {
                     try {
                         val mp3file = Mp3File(tempAudioFile)
                         val id3v2Tag = if (mp3file.hasId3v2Tag()) mp3file.id3v2Tag else ID3v24Tag()
@@ -1014,7 +1017,9 @@ object DownloadManager {
                     duration = track.durationMs ?: 0L,
                     localAudioPath = audioPath,
                     localArtworkPath = internalArtFile.absolutePath,
-                    downloadedAt = creationTimestamp
+                    downloadedAt = creationTimestamp,
+                    source = track.source?.takeUnless { it == "soundcloud" },
+                    permalinkUrl = track.permalinkUrl,
                 )
                 if (existingTrack == null) dao.insertTrack(localTrack) else dao.updateTrack(localTrack)
 
@@ -1042,7 +1047,7 @@ object DownloadManager {
         return job
     }
 
-    /** Remux a plain HLS stream to a local m4a container with FFmpeg (stream copy, no re-encode). */
+    /** Decode a plain HLS stream to AAC/M4A. Direct lossless streams bypass this conversion. */
     internal fun remuxHls(m3u8Url: String, outFile: File, onProgress: (Int) -> Unit) {
         // `use` on both: their contexts are native, and an exception mid-copy must not strand them.
         org.bytedeco.javacv.FFmpegFrameGrabber(m3u8Url).use { grabber ->
@@ -1124,11 +1129,11 @@ object DownloadManager {
         activeJobs[trackId]?.cancel()
         activeJobs.remove(trackId)
         _downloadProgress.update { it - trackId }
-        // Both extensions: YouTube/HLS tracks download as temp_<id>.m4a, everything else as .mp3 —
-        // the hardcoded .mp3 below is why cancelled m4a downloads left their temp file behind.
+        // The resolver can return several original containers; cancellation must clean each one.
         try {
-            File(AppDirs.audioCacheDir, "temp_$trackId.mp3").delete()
-            File(AppDirs.audioCacheDir, "temp_$trackId.m4a").delete()
+            DownloadAudioFormat.entries.forEach { format ->
+                File(AppDirs.audioCacheDir, "temp_$trackId.${format.extension}").delete()
+            }
             File(AppDirs.audioCacheDir, "temp_art_$trackId.jpg").delete()
         } catch (e: Exception) {}
         _storageTrigger.update { it + 1 }

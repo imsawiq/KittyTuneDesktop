@@ -84,6 +84,7 @@ data class SharedTrack(
         user = User(userId, username, null),
         source = source,
         permalinkUrl = permalinkUrl,
+        publisherMetadata = artist?.takeIf { it.isNotBlank() }?.let { Track.PublisherMetadata(artist = it) },
     )
 
     companion object {

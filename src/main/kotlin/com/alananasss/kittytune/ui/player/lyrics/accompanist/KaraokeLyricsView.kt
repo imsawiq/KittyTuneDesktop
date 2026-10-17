@@ -68,6 +68,7 @@ import com.alananasss.kittytune.ui.player.lyrics.revealWhenPlaced
 import com.alananasss.kittytune.ui.player.lyrics.returnToLine
 import com.alananasss.kittytune.ui.player.lyrics.LyricsScrolling
 import com.alananasss.kittytune.ui.player.lyrics.glideToLine
+import com.alananasss.kittytune.ui.player.lyrics.lyricsWheel
 import kotlinx.coroutines.delay
 
 internal data class FocusState(
@@ -153,7 +154,10 @@ fun KaraokeLyricsView(
     bounceFactor: Float = 1f,
     lineSpacing: Dp = 0.dp,
     horizontalMargin: Dp = 0.dp,
-    activeScale: Float = 1.00f
+    activeScale: Float = 1.00f,
+    isPlaying: Boolean = true,
+    seekPositionMs: Long? = null,
+    wheelLines: Float = 3f,
 ) {
     val density = LocalDensity.current
     val stableNormalTextStyle = remember(normalLineTextStyle) { normalLineTextStyle }
@@ -342,10 +346,21 @@ fun KaraokeLyricsView(
     // after the same grace the other views give before following the song again.
     val isUserScrolling by remember { derivedStateOf { listState.isScrollInProgress && !scrollInCode.value } }
     var isReadingByHand by remember { mutableStateOf(false) }
-    LaunchedEffect(isUserScrolling) {
+    var manualWheelMs by remember { mutableLongStateOf(0L) }
+    val wheelScope = androidx.compose.runtime.rememberCoroutineScope()
+    val pausedPosition = seekPositionMs.takeUnless { isPlaying }
+    var previousPausedPosition by remember(lyrics) { mutableStateOf(pausedPosition) }
+    LaunchedEffect(pausedPosition) {
+        if (previousPausedPosition != null && pausedPosition != null && pausedPosition != previousPausedPosition) {
+            isReadingByHand = false
+        }
+        previousPausedPosition = pausedPosition
+    }
+    LaunchedEffect(isUserScrolling, isPlaying, manualWheelMs) {
         if (isUserScrolling) {
             isReadingByHand = true
         } else if (isReadingByHand) {
+            if (!isPlaying) return@LaunchedEffect
             delay(LyricsScrolling.MANUAL_GRACE_MS)
             // And back to the line being sung, sliding, rather than waiting for the next line to start: on a
             // pause that never happened, and the view stayed where the reader had left it (issue #66). Done
@@ -438,6 +453,10 @@ fun KaraokeLyricsView(
                 state = listState,
                     modifier = Modifier
                         .fillMaxSize()
+                        .lyricsWheel(listState, wheelScope, { wheelLines }) {
+                            manualWheelMs = System.currentTimeMillis()
+                            isReadingByHand = true
+                        }
                         .revealWhenPlaced(listState, lyricsFocusState.firstIndex, contentKey = lyrics.lines.size to lyrics.lines.firstOrNull()?.start)
                         .graphicsLayer {
                             compositingStrategy = CompositingStrategy.Offscreen
@@ -595,7 +614,10 @@ fun KaraokeLyricsView(
                                             isFocused = isCurrentFocusLine,
                                             isRightAligned = isVisualRightAligned,
                                             isCenterAligned = isVisualCenterAligned,
-                                            onLineClicked = { onLineClicked(line) },
+                                            onLineClicked = {
+                                                if (!isPlaying) isReadingByHand = false
+                                                onLineClicked(line)
+                                            },
                                             onLinePressed = { onLinePressed(line) },
                                             blurRadius = { blurRadiusState.value },
                                             blendMode = stableBlendMode,
@@ -625,7 +647,10 @@ fun KaraokeLyricsView(
                                         isFocused = isCurrentFocusLine,
                                         isRightAligned = isVisualRightAligned,
                                         isCenterAligned = isVisualCenterAligned,
-                                        onLineClicked = { onLineClicked(line) },
+                                        onLineClicked = {
+                                                if (!isPlaying) isReadingByHand = false
+                                                onLineClicked(line)
+                                            },
                                         onLinePressed = { onLinePressed(line) },
                                         blurRadius = { blurRadiusState.value },
                                         blendMode = stableBlendMode,

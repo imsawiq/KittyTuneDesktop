@@ -417,6 +417,13 @@ fun FullPlayerScreen(viewModel: PlayerViewModel, onExitFullScreen: () -> Unit) {
             )
         }
 
+        if (!screensaverActive) {
+            com.alananasss.kittytune.ui.player.automix.AutomixDebugOverlay(
+                currentPositionMs = { viewModel.uiCurrentPosition },
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 56.dp, end = 20.dp),
+            )
+        }
+
         // Inside this window, not in a window of its own: that one opened behind the full-screen player.
         if (viewModel.isSearchingLyrics) {
             SearchLyricsDialog(viewModel = viewModel, onDismiss = { viewModel.isSearchingLyrics = false })
@@ -621,7 +628,7 @@ private fun CoverAndLineLayout(
             roomToItself = 1f,
             showText = showText,
             onToggleText = onToggleText,
-            showCurrentLine = showText && viewModel.lyricsLines.isNotEmpty(),
+            showCurrentLine = showText && (viewModel.lyricsLines.isNotEmpty() || !viewModel.rawPlainLyrics.isNullOrBlank()),
         )
     }
 }
@@ -632,36 +639,11 @@ private fun CoverAndLineLayout(
  */
 @Composable
 private fun CurrentLyricLine(viewModel: PlayerViewModel, palette: FullPlayerPalette, modifier: Modifier = Modifier) {
-    val line by remember {
-        androidx.compose.runtime.derivedStateOf {
-            val lines = viewModel.lyricsLines
-            lines.getOrNull(
-                com.alananasss.kittytune.ui.player.lyrics.LyricsUtils.activeLineIndex(
-                    lines, viewModel.uiCurrentPosition + viewModel.lyricsOffset
-                )
-            )?.text.orEmpty()
-        }
-    }
-    AnimatedContent(
-        targetState = line,
-        transitionSpec = {
-            (fadeIn(tween(320)) + slideInVertically(tween(320)) { it / 2 })
-                .togetherWith(fadeOut(tween(200)) + slideOutVertically(tween(200)) { -it / 2 })
-        },
-        label = "currentLyricLine",
+    com.alananasss.kittytune.ui.player.lyrics.CurrentLyricText(
+        vm = viewModel,
+        color = palette.bright,
         modifier = modifier,
-    ) { text ->
-        androidx.compose.material3.Text(
-            text = text,
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            color = palette.bright,
-            minLines = 2,
-            maxLines = 2,
-            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
+    )
 }
 
 /** The words get more room than the cover, because in the reference they are the subject. */
@@ -1331,11 +1313,6 @@ private fun FullPlayerControls(
     onToggleText: () -> Unit,
 ) {
     Column(Modifier.fillMaxWidth()) {
-        com.alananasss.kittytune.ui.player.automix.AutomixDebugOverlay(
-            currentPositionMs = { viewModel.uiCurrentPosition },
-            modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp)
-        )
-
         FullPlayerSeekBar(viewModel, palette)
 
         Spacer(Modifier.height(8.dp))
@@ -1601,7 +1578,7 @@ private fun FullPlayerSeekBar(viewModel: PlayerViewModel, palette: FullPlayerPal
 private fun TimeLabel(text: String, palette: FullPlayerPalette, modifier: Modifier = Modifier) {
     androidx.compose.material3.Text(
         text = text,
-        style = MaterialTheme.typography.labelMedium,
+        style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"),
         color = palette.dim,
         modifier = modifier,
     )
