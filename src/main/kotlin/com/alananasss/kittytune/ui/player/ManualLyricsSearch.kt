@@ -25,6 +25,24 @@ internal data class LyricsSearchTrack(
  */
 internal object ManualLyricsSearch {
 
+    /** Imported and embedded lyrics are available offline and belong to this exact track. */
+    fun localResult(track: LyricsSearchTrack, raw: String): UnifiedLyricResult? {
+        if (raw.isBlank()) return null
+        val (lineSync, wordSync) = timingsOf(raw, track.durationMs)
+        return UnifiedLyricResult(
+            id = track.id,
+            name = track.title,
+            artistName = track.artist,
+            albumName = track.album,
+            durationSec = track.durationMs / 1000.0,
+            hasLineSync = lineSync,
+            hasWordSync = wordSync,
+            provider = "LOCAL",
+            rawContent = raw,
+            previewText = cleanPreview(raw),
+        )
+    }
+
     /** How long one source gets. Long enough for LrcLib on a bad day: the others are shown meanwhile. */
     const val PROVIDER_TIMEOUT_MS = 10_000L
 
@@ -81,10 +99,10 @@ internal object ManualLyricsSearch {
             .groupBy { duplicateKey(it) }
             .values
             .map { copies -> copies.minBy { lengthMiss(it, targetSec) } }
-            // Word timings first, then line timings, then plain text, whoever the source is; within a kind the
-            // closest to this song. An unrelated song never outranks the right one by its timings alone.
+            // This track's local text stays first; online results follow by identity, timings and match.
             .sortedWith(
-                compareByDescending<UnifiedLyricResult> { isAboutThisSong(it, target) }
+                compareByDescending<UnifiedLyricResult> { it.provider == "LOCAL" }
+                    .thenByDescending { isAboutThisSong(it, target) }
                     .thenByDescending { syncTier(it) }
                     .thenByDescending { rank(it, target) },
             )

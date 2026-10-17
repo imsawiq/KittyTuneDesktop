@@ -1,0 +1,48 @@
+package com.alananasss.kittytune
+
+import com.alananasss.kittytune.audio.VolumeCurve
+import com.alananasss.kittytune.media.Player
+import org.junit.Test
+import kotlin.test.assertEquals
+
+class PlayerVolumeEnvelopeTest {
+    @Test
+    fun sliderChangePreservesIncomingFadeGainImmediately() {
+        val player = Player()
+        try {
+            player.setFadeGains(0.4f, 0.8f)
+            player.volume = 0.6f
+            assertEquals(VolumeCurve.sliderToAmplitude(0.6f) * 0.4f, player.activeEngine.getVolume(), 0.0001f)
+            player.setFadeGains(0.7f, 0.5f)
+            assertEquals(VolumeCurve.sliderToAmplitude(0.6f) * 0.7f, player.activeEngine.getVolume(), 0.0001f)
+        } finally {
+            player.release()
+        }
+    }
+
+    @Test
+    fun mutePersistsAcrossSubsequentFadeTicks() {
+        val player = Player()
+        try {
+            player.setFadeGains(0.5f, 0.5f)
+            player.volume = 0f
+            player.setFadeGains(0.9f, 0.1f)
+            assertEquals(0f, player.activeEngine.getVolume())
+        } finally {
+            player.release()
+        }
+    }
+
+    @Test
+    fun invalidSliderValueCannotReachOutputLine() {
+        val player = Player()
+        try {
+            player.volume = Float.NaN
+            assertEquals(0f, player.activeEngine.getVolume())
+            player.volume = 2f
+            assertEquals(1f, player.activeEngine.getVolume())
+        } finally {
+            player.release()
+        }
+    }
+}

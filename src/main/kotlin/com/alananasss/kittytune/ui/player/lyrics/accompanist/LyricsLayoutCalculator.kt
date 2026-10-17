@@ -102,23 +102,6 @@ fun String.shouldUseSimpleAnimation(): Boolean {
     return cleanedStr.isPureCjk() || cleanedStr.any { it.isArabic() || it.isDevanagari() }
 }
 
-fun groupIntoWords(syllables: List<KaraokeSyllable>): List<List<KaraokeSyllable>> {
-    if (syllables.isEmpty()) return emptyList()
-    val words = mutableListOf<List<KaraokeSyllable>>()
-    var currentWord = mutableListOf<KaraokeSyllable>()
-    syllables.forEach { syllable ->
-        currentWord.add(syllable)
-        if (syllable.content.trimEnd().length < syllable.content.length) {
-            words.add(currentWord.toList())
-            currentWord = mutableListOf()
-        }
-    }
-    if (currentWord.isNotEmpty()) {
-        words.add(currentWord.toList())
-    }
-    return words
-}
-
 fun measureSyllablesAndDetermineAnimation(
     syllables: List<KaraokeSyllable>,
     textMeasurer: TextMeasurer,
@@ -247,7 +230,9 @@ fun calculateGreedyWrappedLines(
                 // 特殊情况: 单词超级长（比如德语符合词），比一整行还宽
                 // 此时必须破坏单词完整性，退化回按音节换行
                 wordSyllables.forEach { syllable ->
-                    if (currentLineWidth + syllable.width > availableWidthPx && currentLine.isNotEmpty()) {
+                    if (currentLineWidth + syllable.width > availableWidthPx && currentLine.isNotEmpty()
+                        && !syllable.syllable.content.isClosingLyricPunctuation()
+                    ) {
                         val trimmedLine = trimDisplayLineTrailingSpaces(currentLine, textMeasurer, style)
                         if (trimmedLine.syllables.isNotEmpty()) lines.add(trimmedLine)
                         currentLine.clear()

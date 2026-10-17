@@ -304,6 +304,27 @@ private fun DriftSync(viewModel: PlayerViewModel) {
         }
     }
     Spacer(Modifier.height(6.dp))
+    if (viewModel.duration >= com.alananasss.kittytune.data.LyricsSync.MIN_SPAN_MS) {
+        listOf(false, true).forEach { atEnd ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    str(if (atEnd) "lyrics_sync_edit_end" else "lyrics_sync_edit_start"),
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(format(sync.offsetAt(if (atEnd) viewModel.duration else 0L)), style = MaterialTheme.typography.labelMedium)
+                IconButton(onClick = { viewModel.adjustLyricsSyncEndpoint(atEnd, -100L) }) {
+                    Icon(Icons.Rounded.Remove, str("lyrics_sync_earlier"))
+                }
+                IconButton(onClick = { viewModel.adjustLyricsSyncEndpoint(atEnd, 100L) }) {
+                    Icon(Icons.Rounded.Add, str("lyrics_sync_later"))
+                }
+            }
+        }
+    }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         val startSet = sync.isTwoPoint || sync.anchorMs > 0L
         OutlinedButton(

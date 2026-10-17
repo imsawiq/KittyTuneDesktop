@@ -259,7 +259,9 @@ private fun SourceChip(label: String, selected: Boolean, searching: Boolean, onC
 /** Where the lyrics on screen came from, and how the search is going. */
 @Composable
 private fun SearchStatus(viewModel: PlayerViewModel) {
-    val source = viewModel.currentLyricsSource?.let { PreferredLyricsProvider.fromName(it)?.displayName ?: it }
+    val source = viewModel.currentLyricsSource?.let {
+        if (it == "LOCAL") str("lyrics_source_file") else PreferredLyricsProvider.fromName(it)?.displayName ?: it
+    }
     val pending = viewModel.pendingLyricSources.size
     val found = viewModel.unifiedLyricSearchResults.size
     val parts = buildList {
@@ -403,7 +405,8 @@ private fun ResultCard(result: UnifiedLyricResult, onClick: () -> Unit, modifier
                 Spacer(Modifier.width(12.dp))
                 Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Badge(
-                        text = PreferredLyricsProvider.fromName(result.provider)?.displayName ?: result.provider,
+                        text = if (result.provider == "LOCAL") str("lyrics_source_file")
+                            else PreferredLyricsProvider.fromName(result.provider)?.displayName ?: result.provider,
                         container = MaterialTheme.colorScheme.secondaryContainer,
                         content = MaterialTheme.colorScheme.onSecondaryContainer,
                     )

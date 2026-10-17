@@ -97,10 +97,6 @@ import java.awt.datatransfer.StringSelection
 import java.io.File
 import java.net.URLDecoder
 
-enum class TrackSortBy {
-    FIRST_ADDED, RECENTLY_ADDED, TITLE_AZ, ARTIST_AZ
-}
-
 /** Width of the gap between likes-table columns; the header's drag handles live in it. */
 private val COLUMN_GAP = 16.dp
 
@@ -440,7 +436,11 @@ fun PlaylistDetailScreen(
         playlistSearchQuery = ""
         focusManager.clearFocus()
     }
-    var playlistSortBy by remember { mutableStateOf(TrackSortBy.FIRST_ADDED) }
+    val newestTracksFirst = playlistId == "likes" || playlistId.startsWith("liked_by:") ||
+        playlistId == "downloads" || playlistId == "local_files"
+    var playlistSortBy by remember(playlistId) {
+        mutableStateOf(if (newestTracksFirst) TrackSortBy.RECENTLY_ADDED else TrackSortBy.FIRST_ADDED)
+    }
 
     val listState = rememberLazyListState()
 
@@ -483,20 +483,15 @@ fun PlaylistDetailScreen(
         if (rawTracks.isNotEmpty()) AlbumResolver.prefetchFromDb(rawTracks)
     }
 
-    val tracksToDisplay = if (playlistSearchQuery.isEmpty() && playlistSortBy == TrackSortBy.FIRST_ADDED) {
+    val filteredTracks = if (playlistSearchQuery.isEmpty()) {
         rawTracks
     } else {
-        val filtered = rawTracks.filter {
+        rawTracks.filter {
             it.title?.contains(playlistSearchQuery, ignoreCase = true) == true ||
                 it.user?.username?.contains(playlistSearchQuery, ignoreCase = true) == true
         }
-        when (playlistSortBy) {
-            TrackSortBy.FIRST_ADDED -> filtered
-            TrackSortBy.RECENTLY_ADDED -> filtered.reversed()
-            TrackSortBy.TITLE_AZ -> filtered.sortedBy { it.title?.lowercase() ?: "" }
-            TrackSortBy.ARTIST_AZ -> filtered.sortedBy { it.user?.username?.lowercase() ?: "" }
-        }
     }
+    val tracksToDisplay = sortPlaylistTracks(filteredTracks, playlistSortBy, newestTracksFirst)
 
     // Date column uses added-at where available (likes, local playlists, downloads) and
     // falls back to release/upload date for remote playlists — but only when the rows can

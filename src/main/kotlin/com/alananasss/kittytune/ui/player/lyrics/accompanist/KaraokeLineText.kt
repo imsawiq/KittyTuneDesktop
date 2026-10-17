@@ -98,7 +98,9 @@ private fun createLineGradientBrush(
     val firstSyllableStart = rowData.firstSyllableStart
     val lastSyllableEnd = rowData.lastSyllableEnd
 
-    val isLineSynced = lineLayout.all { it.syllable.start == firstSyllableStart && it.syllable.end == lastSyllableEnd }
+    val isLineSynced = lineLayout.size > 1 && lineLayout.all {
+        it.syllable.start == firstSyllableStart && it.syllable.end == lastSyllableEnd
+    }
     if (isLineSynced) {
         val color = if (currentTimeMs >= firstSyllableStart) activeColor else inactiveColor
         return SolidColor(color)

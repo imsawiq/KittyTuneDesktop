@@ -127,6 +127,10 @@ class AudioEngine {
 
     @Volatile
     private var seekRequestMs: Long = -1L
+    private val seekLock = Any()
+    @Volatile private var seekRevision = 0L
+    @Volatile private var processingSeek = false
+    val isSeeking: Boolean get() = seekRequestMs >= 0L || processingSeek
 
     @Volatile
     private var paused = true
@@ -367,9 +371,16 @@ class AudioEngine {
     }
 
     fun seekTo(ms: Long) {
-        val coerced = ms.coerceAtLeast(0)
-        seekRequestMs = coerced
-        positionMs = coerced
+        synchronized(seekLock) {
+            val target = if (durationMs > 0L) ms.coerceIn(0L, durationMs) else ms.coerceAtLeast(0L)
+            seekRevision++
+            seekRequestMs = target
+            positionMs = target
+        }
+        if (state == State.ENDED && currentUrl != null) {
+            setState(State.BUFFERING)
+            prepare()
+        }
     }
 
     fun setVolume(v: Float) {
@@ -404,6 +415,8 @@ class AudioEngine {
         positionMs = 0L
         durationMs = 0L
         seekRequestMs = -1L
+        processingSeek = false
+        seekRevision++
         setState(State.IDLE)
     }
 
@@ -741,10 +754,16 @@ class AudioEngine {
                     line = localLine
                 }
 
-                val seek = seekRequestMs
+                val (seek, revision) = synchronized(seekLock) {
+                    val request = seekRequestMs
+                    if (request >= 0L) {
+                        processingSeek = true
+                        seekRequestMs = -1L
+                    }
+                    request to seekRevision
+                }
                 if (seek >= 0) {
                     val targetTimestamp = seek * 1000L
-                    seekRequestMs = -1L
 
                     Logger.e("AudioEngine", "Seeking to targetTimestamp=$targetTimestamp (ms=$seek)")
 
@@ -782,13 +801,16 @@ class AudioEngine {
                         Logger.e("AudioEngine", "Seek error - ${e.message}")
                     }
 
+                    if (revision != seekRevision) continue
                     if (!seekOk) {
-                        if (durationMs > 0 && seek >= durationMs - 1500L) {
+                        if (durationMs > 0 && seek >= durationMs) {
                             Logger.e("AudioEngine", "Seek reached end of stream at $seek ms (duration=$durationMs ms). Ending track.")
-                            positionMs = durationMs
+                            synchronized(seekLock) {
+                                if (revision == seekRevision) positionMs = durationMs
+                            }
+                            processingSeek = false
                             drainStretcher(outBuf, localLine)
-                            setStateAsync(State.ENDED)
-                            break
+                            if (setStateAsync(State.ENDED, revision)) break else continue
                         }
 
                         val recovered = recoverStream(
@@ -796,22 +818,25 @@ class AudioEngine {
                             activeUrl,
                             headers,
                             seek,
-                            maxAttempts = if (warmUpRequested) WARM_UP_RECOVERY_ATTEMPTS else Int.MAX_VALUE,
+                            maxAttempts = if (warmUpRequested) WARM_UP_RECOVERY_ATTEMPTS else INITIAL_OPEN_ATTEMPTS,
                         )
                         if (recovered.first != null) {
                             grabber = recovered.first
                             if (recovered.second != null) activeUrl = recovered.second!!
                             seekFrame = try { grabber?.grabSamples() } catch (_: Exception) { null }
                             seekOk = seekFrame != null
-                        } else if (durationMs > 0 && seek >= durationMs - 3000L) {
-                            Logger.e("AudioEngine", "Seek recovery at end of track failed at $seek ms. Ending track.")
-                            positionMs = durationMs
-                            drainStretcher(outBuf, localLine)
-                            setStateAsync(State.ENDED)
-                            break
+                        } else {
+                            if (revision != seekRevision) continue
+                            throw IllegalStateException("Unable to seek to $seek ms")
                         }
                     }
 
+                    if (revision != seekRevision) continue
+                    // Discard old audio before queuing the first frame at the new position.
+                    stretcher.flush()
+                    limiter.flush()
+                    chain.forEach { it.flush() }
+                    localLine?.flush()
                     if (seekOk && grabber != null) {
                         if (isHls) {
                             // On HLS, createGrabber(seek) already positioned at the requested segment.
@@ -842,11 +867,10 @@ class AudioEngine {
                         }
                     }
 
-                    positionMs = seek
-                    stretcher.flush()
-                    limiter.flush()
-                    chain.forEach { it.flush() }
-                    localLine?.flush()
+                    synchronized(seekLock) {
+                        if (revision == seekRevision) positionMs = seek
+                    }
+                    processingSeek = false
 
                     if (warmUpRequested) {
                         warmUpRequested = false
@@ -869,6 +893,7 @@ class AudioEngine {
                 }
                 localLine?.let { if (!it.isRunning) it.start() }
 
+                val readRevision = seekRevision
                 var frame: Frame? = null
                 try {
                     frame = grabber?.grabSamples()
@@ -877,13 +902,13 @@ class AudioEngine {
                     frame = null
                 }
 
+                if (readRevision != seekRevision || seekRequestMs >= 0L) continue
                 if (frame == null) {
                     if (!stopFlag && activeWorkerId == workerId) {
                         val isNearEnd = (durationMs > 0 && positionMs >= durationMs - 3000L) || (durationMs == 0L)
                         if (isNearEnd) {
                             drainStretcher(outBuf, localLine)
-                            setStateAsync(State.ENDED)
-                            break
+                            if (setStateAsync(State.ENDED, readRevision)) break else continue
                         } else {
                             Logger.e(
                                 "AudioEngine",
@@ -897,8 +922,7 @@ class AudioEngine {
                                 continue
                             } else {
                                 drainStretcher(outBuf, localLine)
-                                setStateAsync(State.ENDED)
-                                break
+                                if (setStateAsync(State.ENDED, readRevision)) break else continue
                             }
                         }
                     } else {
@@ -920,6 +944,7 @@ class AudioEngine {
                 onError?.invoke(t)
             }
         } finally {
+            if (activeWorkerId == workerId) processingSeek = false
             grabber?.releaseUnlockedQuietly()
             closeLineInstance(localLine)
         }
@@ -1153,14 +1178,21 @@ class AudioEngine {
         onStateChanged?.invoke(s)
     }
 
-    private fun setStateAsync(s: State) {
-        state = s
+    private fun setStateAsync(s: State, eventRevision: Long = seekRevision): Boolean {
+        val eventWorker = activeWorkerId
+        synchronized(seekLock) {
+            if (eventRevision != seekRevision || (s == State.ENDED && isSeeking)) return false
+            state = s
+        }
         scope.launch(Dispatchers.Main) {
+            // A queued EOF from before a seek must not advance the new playhead or the next track.
+            if (eventWorker != activeWorkerId || eventRevision != seekRevision || state != s) return@launch
             onStateChanged?.invoke(s)
             if (s == State.ENDED) {
                 onCompletion?.invoke()
             }
         }
+        return true
     }
 
     private fun setPlaying(p: Boolean) {

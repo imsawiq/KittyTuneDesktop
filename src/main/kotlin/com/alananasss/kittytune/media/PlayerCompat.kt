@@ -12,6 +12,7 @@ import com.alananasss.kittytune.utils.SignedUrl
 import com.alananasss.kittytune.audio.automix.AutomixManager
 import com.alananasss.kittytune.audio.automix.AutomixPlan
 import com.alananasss.kittytune.data.local.PlayerPreferences
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -149,13 +150,13 @@ class Player {
     private var currentIndex = 0
     private val scope = CoroutineScope(Dispatchers.Default)
     private var resolveJob: Job? = null
-    
+
     var onCompletion: (() -> Unit)? = null
     var onError: ((Throwable) -> Unit)? = null
 
     var activeEngine = AudioEngine()
     private var fadingEngine: AudioEngine? = null
-    
+
     @Volatile var isCrossfadingOut = false
     private var lastEffectsState: AudioEffectsState? = null
 
@@ -170,7 +171,11 @@ class Player {
 
     @Volatile
     private var prebufferedTransition: PrebufferedTransition? = null
+    private var prebufferJob: Job? = null
     private var crossfadeJob: Job? = null
+    private val volumeLock = Any()
+    private var incomingFadeGain = 1f
+    private var outgoingFadeGain = 0f
 
     fun isPrebuffered(trackId: Long): Boolean {
         val pb = prebufferedTransition ?: return false
@@ -178,6 +183,8 @@ class Player {
     }
 
     fun releasePrebuffered() {
+        prebufferJob?.cancel()
+        prebufferJob = null
         val pb = prebufferedTransition ?: return
         prebufferedTransition = null
         try {
@@ -190,7 +197,10 @@ class Player {
         if (isCrossfadingOut) return
         if (isPrebuffered(nextTrack.id)) return
 
-        scope.launch {
+        releasePrebuffered()
+        prebufferJob = scope.launch {
+            var engine: AudioEngine? = null
+            var retained = false
             try {
                 val rawUrl = item.uri?.takeIf {
                     if (it.startsWith("metrofuse-deezer://")) true
@@ -208,21 +218,28 @@ class Player {
                 }
                 val headers = buildHeaders(nextTrack)
 
-                val engine = AudioEngine()
-                lastEffectsState?.let { engine.applyEffects(it) }
+                val preparedEngine = AudioEngine()
+                engine = preparedEngine
+                lastEffectsState?.let { preparedEngine.applyEffects(it) }
 
                 if (automixPlan != null && (automixPlan.tempoRatio != 1f || automixPlan.pitchRatio != 1f)) {
-                    engine.setStretcherRatio(automixPlan.tempoRatio, automixPlan.pitchRatio)
+                    preparedEngine.setStretcherRatio(automixPlan.tempoRatio, automixPlan.pitchRatio)
                 }
 
                 val startPos = automixPlan?.incomingStartMs ?: 0L
-                engine.setVolume(0f)
-                engine.setMediaItem(url, headers, startPos)
-                engine.prepare()
+                preparedEngine.setVolume(0f)
+                preparedEngine.setMediaItem(url, headers, startPos)
+                preparedEngine.prepare()
 
-                prebufferedTransition = PrebufferedTransition(engine, item, nextTrack.id, automixPlan, url, headers)
-            } catch (_: Exception) {
-                // Ignore prebuffering error, fallback to normal load on transition
+                if (!isActive) return@launch
+                prebufferedTransition = PrebufferedTransition(preparedEngine, item, nextTrack.id, automixPlan, url, headers)
+                retained = true
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                com.alananasss.kittytune.utils.Logger.w("Player", "Prebuffer failed: ${error.message}")
+            } finally {
+                if (!retained) engine?.release()
             }
         }
     }
@@ -243,6 +260,7 @@ class Player {
 
     var repeatMode: Int = REPEAT_MODE_OFF
 
+    val isSeeking: Boolean get() = activeEngine.isSeeking
     val isPlaying: Boolean get() = activeEngine.isPlaying
     val currentPosition: Long get() = activeEngine.positionMs
     val duration: Long get() = activeEngine.durationMs
@@ -251,9 +269,25 @@ class Player {
     /** The slider's position, 0..1. Engines are given [volumeAmplitude], never this directly. */
     var volume: Float = 1f
         set(value) {
-            field = value
-            activeEngine.setVolume(volumeAmplitude)
+            synchronized(volumeLock) {
+                field = if (value.isFinite()) value.coerceIn(0f, 1f) else 0f
+                applyFadeVolumes()
+            }
         }
+
+    // Call under volumeLock so a slider update and a fade tick cannot overwrite each other.
+    private fun applyFadeVolumes() {
+        activeEngine.setVolume(volumeAmplitude * incomingFadeGain)
+        fadingEngine?.setVolume(volumeAmplitude * outgoingFadeGain)
+    }
+
+    internal fun setFadeGains(incoming: Float, outgoing: Float) {
+        synchronized(volumeLock) {
+            incomingFadeGain = incoming
+            outgoingFadeGain = outgoing
+            applyFadeVolumes()
+        }
+    }
 
     private val volumeAmplitude: Float
         get() = com.alananasss.kittytune.audio.VolumeCurve.sliderToAmplitude(volume)
@@ -275,7 +309,7 @@ class Player {
     init {
         bindEngine(activeEngine)
     }
-    
+
     private fun bindEngine(eng: AudioEngine) {
         eng.onPlayingChanged = { playing -> listeners.forEach { it.onIsPlayingChanged(playing) } }
         eng.onStateChanged = { st ->
@@ -287,9 +321,9 @@ class Player {
             }
             listeners.forEach { it.onPlaybackStateChanged(mapped) }
         }
-        eng.onError = { err -> 
+        eng.onError = { err ->
             onError?.invoke(err)
-            listeners.forEach { it.onPlayerError(err) } 
+            listeners.forEach { it.onPlayerError(err) }
         }
         eng.onCompletion = {
             val trackId = currentMediaItem?.track?.id ?: com.alananasss.kittytune.data.MusicManager.currentTrack?.id
@@ -341,6 +375,7 @@ class Player {
         fadingEngine?.stop()
         fadingEngine?.release()
         fadingEngine = null
+        setFadeGains(1f, 0f)
         items.clear()
         items.add(item)
         currentIndex = 0
@@ -392,10 +427,10 @@ class Player {
         items.clear()
         items.add(item)
         currentIndex = 0
-        
+
         crossfadeJob?.cancel()
         resolveJob?.cancel()
-        
+
         fadingEngine?.stop()
         fadingEngine?.release()
         fadingEngine = null
@@ -406,6 +441,11 @@ class Player {
         val targetTrackId = item.track?.id
         val isAdopted = prebufferedTransition != null && prebufferedTransition?.trackId == targetTrackId
         val pre = if (isAdopted) prebufferedTransition else null
+        if (!isAdopted) releasePrebuffered()
+        else {
+            prebufferJob?.cancel()
+            prebufferJob = null
+        }
         prebufferedTransition = null
 
         val newEngine = pre?.engine ?: AudioEngine()
@@ -415,6 +455,7 @@ class Player {
         activeEngine = newEngine
         fadingEngine = oldEngine
         isCrossfadingOut = true
+        setFadeGains(0f, 1f)
 
         if (effectivePlan != null) {
             AutomixManager.setIsAutomixing(true)
@@ -501,8 +542,7 @@ class Player {
                     newEngine.prepare()
                 }
 
-                val targetVolume = volumeAmplitude
-                newEngine.setVolume(0f)
+                setFadeGains(0f, 1f)
                 newEngine.setTrackGainDb(trackGainDb)
 
                 if (playWhenReady) newEngine.play()
@@ -535,7 +575,7 @@ class Player {
                 val bassDuckingEnabled = PlayerPreferences().getAutomixBassDuckingEnabled()
 
                 if (actualCrossfadeMs <= 0L) {
-                    newEngine.setVolume(targetVolume)
+                    setFadeGains(1f, 0f)
                     oldEngine.stop()
                     oldEngine.release()
                     AutomixManager.setMixProgress(0f)
@@ -561,7 +601,7 @@ class Player {
                         }
 
                         if (oldEngine.state == AudioEngine.State.ENDED || oldEngine.state == AudioEngine.State.IDLE) {
-                            newEngine.setVolume(targetVolume)
+                            setFadeGains(1f, 0f)
                             break
                         }
 
@@ -573,8 +613,8 @@ class Player {
                         // rather than two things that usually happen together.
                         AutomixManager.setMixProgress(progress)
 
-                        newEngine.setVolume(targetVolume * fadeIn)
-                        oldEngine.setVolume(targetVolume * fadeOut)
+                        if (!isActive || fadingEngine !== oldEngine) break
+                        setFadeGains(fadeIn, fadeOut)
 
                         if (effectivePlan != null && bassDuckingEnabled) {
                             oldEngine.setDuckMix(equalPowerIn(0.45f, 1f, progress))
@@ -585,48 +625,44 @@ class Player {
                     }
                 }
             } finally {
-                isCrossfadingOut = false
-                try {
-                    if (fadingEngine == oldEngine) {
-                        newEngine.setVolume(volumeAmplitude)
-                        oldEngine.setVolume(0f)
-                        oldEngine.stop()
-                        oldEngine.release()
-                        fadingEngine = null
-                    }
-                } catch (_: Exception) {}
+                if (fadingEngine == oldEngine) {
+                    setFadeGains(1f, 0f)
+                    oldEngine.stop()
+                    oldEngine.release()
+                    fadingEngine = null
 
-                oldEngine.resetDuckMix()
-                newEngine.resetDuckMix()
+                    oldEngine.resetDuckMix()
+                    newEngine.resetDuckMix()
 
-                if (effectivePlan != null) {
-                    AutomixManager.setIsAutomixing(false)
-                    AutomixManager.clearPlan()
+                    if (effectivePlan != null) {
+                        AutomixManager.setIsAutomixing(false)
+                        AutomixManager.clearPlan()
 
-                    if (effectivePlan.tempoRatio != 1f || effectivePlan.pitchRatio != 1f) {
-                        // Back to the track's own tempo and key, in steps too small to hear. Ten jumps of a
-                        // fifth of a second each made the start of a mixed-in track warble, as if it were
-                        // playing at a lower quality for its first seconds (issue #66).
-                        scope.launch {
-                            val startTempo = effectivePlan.tempoRatio
-                            val startPitch = effectivePlan.pitchRatio
-                            for (step in 1..STRETCH_RAMP_STEPS) {
-                                delay(STRETCH_RAMP_STEP_MS)
-                                if (!isActive) break
-                                val frac = FastOutSlowInEasing.transform(step.toFloat() / STRETCH_RAMP_STEPS)
-                                val curTempo = startTempo + frac * (1f - startTempo)
-                                val curPitch = startPitch + frac * (1f - startPitch)
-                                newEngine.setStretcherRatio(curTempo, curPitch)
+                        if (effectivePlan.tempoRatio != 1f || effectivePlan.pitchRatio != 1f) {
+                            // Back to the track's own tempo and key, in steps too small to hear. Ten jumps of a
+                            // fifth of a second each made the start of a mixed-in track warble, as if it were
+                            // playing at a lower quality for its first seconds (issue #66).
+                            scope.launch {
+                                val startTempo = effectivePlan.tempoRatio
+                                val startPitch = effectivePlan.pitchRatio
+                                for (step in 1..STRETCH_RAMP_STEPS) {
+                                    delay(STRETCH_RAMP_STEP_MS)
+                                    if (!isActive) break
+                                    val frac = FastOutSlowInEasing.transform(step.toFloat() / STRETCH_RAMP_STEPS)
+                                    val curTempo = startTempo + frac * (1f - startTempo)
+                                    val curPitch = startPitch + frac * (1f - startPitch)
+                                    newEngine.setStretcherRatio(curTempo, curPitch)
+                                }
+                                newEngine.setStretcherRatio(1f, 1f)
                             }
-                            newEngine.setStretcherRatio(1f, 1f)
                         }
                     }
+                    isCrossfadingOut = false
+                    // Every exit from the loop above lands here, including a fade cut short or a track
+                    // that ended underneath it. Leaving the artwork lit for a mix that is over would be
+                    // worse than never lighting it.
+                    AutomixManager.setMixProgress(0f)
                 }
-                isCrossfadingOut = false
-                // Every exit from the loop above lands here, including a fade cut short or a track
-                // that ended underneath it. Leaving the artwork lit for a mix that is over would be
-                // worse than never lighting it.
-                AutomixManager.setMixProgress(0f)
             }
         }
     }
@@ -698,7 +734,7 @@ class Player {
                 rawUrl
             }
             val headers = buildHeaders(item.track)
-            
+
             val track = item.track
             if (track != null) {
                 val cached = com.alananasss.kittytune.data.TrackLoudnessRepository.getLoudness(track.id)
@@ -719,7 +755,7 @@ class Player {
             fadingEngine?.stop()
             fadingEngine?.release()
             fadingEngine = null
-            
+
             activeEngine.setVolume(volumeAmplitude)
             activeEngine.setTrackGainDb(trackGainDb)
             if (activeEngine.currentUrl != url) {
@@ -744,7 +780,7 @@ class Player {
         }
         return headers
     }
-    
+
     fun applyEffects(state: AudioEffectsState) {
         lastEffectsState = state
         activeEngine.applyEffects(state)

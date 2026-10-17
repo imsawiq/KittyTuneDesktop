@@ -82,7 +82,7 @@ fun UpdateDialog(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = when {
-                                isReady -> str("update_success_title")
+                                isReady -> str("update_ready_title")
                                 isAuthFailed -> str("update_auth_failed_title")
                                 isWaitingForAuth -> str("update_waiting_auth_title")
                                 isInstalling -> str("update_installing_title")
@@ -106,6 +106,12 @@ fun UpdateDialog(
                                 text = str("update_waiting_auth_step"),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.primary
+                            )
+                        } else if (isReady) {
+                            Text(
+                                text = str("update_ready_desc"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         } else if (isAuthFailed) {
                             Text(

@@ -123,6 +123,13 @@ fun TrackInfoTab(vm: PlayerViewModel) {
     val displayTrack = fullTrack ?: currentTrack
 
     val listState = rememberLazyListState()
+    var sortScrollPosition by remember(trackId) { mutableStateOf<Pair<Int, Int>?>(null) }
+    LaunchedEffect(vm.commentsLoadRevision) {
+        sortScrollPosition?.let { (index, offset) ->
+            listState.scrollToItem(index, offset)
+            sortScrollPosition = null
+        }
+    }
     var commentsScrollRequest by remember { mutableStateOf(0) }
 
     val organizedComments = remember(vm.commentsList.toList()) {
@@ -338,7 +345,12 @@ fun TrackInfoTab(vm: PlayerViewModel) {
                 com.alananasss.kittytune.ui.common.IconChoiceButton(
                     options = CommentSort.entries,
                     selected = vm.commentSort,
-                    onSelect = vm::onCommentSortChanged,
+                    onSelect = { sort ->
+                        if (sort != vm.commentSort) {
+                            sortScrollPosition = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+                            vm.onCommentSortChanged(sort)
+                        }
+                    },
                     icon = { it.icon },
                     label = { str(it.labelResId) },
                     tooltip = { str("sorted_by", str(it.labelResId)) },

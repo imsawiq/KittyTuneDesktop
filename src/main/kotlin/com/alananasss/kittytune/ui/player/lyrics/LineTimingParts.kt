@@ -20,7 +20,9 @@ internal fun splitBackingVocals(text: String): Pair<String, String?> {
     if (backing.isEmpty()) return text to null
     val main = text.replace(BACKING_VOCAL, " ").replace(SPACES, " ").trim()
     if (main.none { it.isLetterOrDigit() }) return text to null
-    return main to backing.joinToString(BACKING_SEPARATOR)
+    return main to backing.mapIndexed { index, text ->
+        if (index < backing.lastIndex) text + backingSeparatorAfter(text) else text
+    }.joinToString("")
 }
 
 /**
@@ -59,7 +61,8 @@ internal fun splitBackingWords(words: List<LyricWord>): Pair<List<LyricWord>, Li
 }
 
 /** What goes between two backing-vocal groups drawn on one line. */
-internal const val BACKING_SEPARATOR = ", "
+internal fun backingSeparatorAfter(text: String): String =
+    if (text.trimEnd().lastOrNull() in listOf(',', '.', ';', ':', '!', '?', '…', '，', '。', '！', '？')) " " else ", "
 
 /** The words of [text], all lit the moment the line starts: a line-timed line that is drawn as karaoke. */
 internal fun instantSyllables(text: String, start: Int, end: Int): List<KaraokeSyllable> =
@@ -119,7 +122,7 @@ internal fun separateBackingVocals(line: LyricLine): Pair<LyricLine, LyricLine?>
                 word.copy(
                     text = when {
                         wordIndex < group.lastIndex -> "$text "
-                        groupIndex < groups.lastIndex -> text + BACKING_SEPARATOR
+                        groupIndex < groups.lastIndex -> text + backingSeparatorAfter(text)
                         else -> text
                     },
                 )

@@ -6,8 +6,10 @@ import com.alananasss.kittytune.data.network.GithubAsset
 import com.alananasss.kittytune.data.network.GithubClient
 import com.alananasss.kittytune.data.network.GithubRelease
 import com.alananasss.kittytune.utils.AppUtils
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -27,10 +29,11 @@ enum class UpdateStatus {
  * Desktop port of the Android UpdateManager.
  * In-app update flow:
  * 1. Download asset with KittyTune progress UI (DOWNLOADING)
- * 2. Silent background installation with KittyTune UI progress (INSTALLING)
- * 3. App restart button (READY_TO_INSTALL -> restartApp)
+ * 2. Validate download and prepare installation (READY_TO_INSTALL)
+ * 3. Windows restart hands installation to a helper after the app exits
  */
 object UpdateManager {
+    private val installScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _status = MutableStateFlow(UpdateStatus.IDLE)
     val status = _status.asStateFlow()
 
@@ -47,10 +50,6 @@ object UpdateManager {
     var downloadedInstallerFile: File? = null
     private var currentInstallProcess: Process? = null
     private var authFailedFile: File? = null
-    // True when we already launched the Windows PowerShell helper script that will
-    // wait for this process to exit, run the installer, and relaunch KittyTune.
-    // When set, restartApp() just needs to exitProcess(0) — the script handles the rest.
-    private var windowsHelperScriptLaunched = false
 
     private const val KEY_LAST_CHECK = "last_check_time"
     private val prefs = NamedPrefs("update_cache")
@@ -83,7 +82,7 @@ object UpdateManager {
         downloadedInstallerFile = file
         _status.value = UpdateStatus.INSTALLING
         _isDialogVisible.value = true
-        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+        installScope.launch {
             performBackgroundInstall(file)
         }
     }
@@ -162,7 +161,7 @@ object UpdateManager {
         killOtherKittyTuneProcesses()
         downloadedInstallerFile?.let { file ->
             _status.value = UpdateStatus.INSTALLING
-            kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+            installScope.launch {
                 performBackgroundInstall(file)
             }
         }
@@ -172,7 +171,7 @@ object UpdateManager {
         val file = authFailedFile ?: downloadedInstallerFile ?: return
         authFailedFile = null
         _status.value = UpdateStatus.WAITING_FOR_AUTH
-        kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
+        installScope.launch {
             performBackgroundInstall(file)
         }
     }
@@ -194,7 +193,6 @@ object UpdateManager {
             if (now - lastCheck < AUTO_CHECK_COOLDOWN_MS) {
                 return
             }
-            prefs.putLong(KEY_LAST_CHECK, now)
         }
 
         _status.value = UpdateStatus.CHECKING
@@ -203,6 +201,7 @@ object UpdateManager {
             val currentVersion = AppUtils.getAppVersion().replace("v", "")
             val release = GithubClient.api.getLatestRelease()
 
+            if (!isManual) prefs.putLong(KEY_LAST_CHECK, System.currentTimeMillis())
             releaseInfo = release
             val remoteVersion = release.versionName.replace("v", "")
 
@@ -260,129 +259,74 @@ object UpdateManager {
         }
     }
 
-    suspend fun downloadUpdate() {
-        val asset = findMatchingAsset()
+    private val downloadMutex = kotlinx.coroutines.sync.Mutex()
 
-        if (asset == null) {
+    suspend fun downloadUpdate() {
+        if (!downloadMutex.tryLock()) return
+        try {
+            downloadUpdateLocked()
+        } finally {
+            downloadMutex.unlock()
+        }
+    }
+
+    private suspend fun downloadUpdateLocked() {
+        val asset = findMatchingAsset() ?: run {
             _status.value = UpdateStatus.ERROR
             return
         }
-
         val isResuming = _status.value == UpdateStatus.PAUSED
         _status.value = UpdateStatus.DOWNLOADING
-
         withContext(Dispatchers.IO) {
             try {
-                val updateDir = File(System.getProperty("java.io.tmpdir"), "KittyTuneUpdates").apply { mkdirs() }
-                var file = File(updateDir, "update_${asset.name}")
-
-                var existingLength = 0L
-                if (isResuming && file.exists()) {
-                    existingLength = file.length()
-                } else {
-                    cleanupOldUpdateCache()
-                    if (file.exists()) {
-                        val deleted = runCatching { file.delete() }.getOrDefault(false)
-                        if (!deleted) {
-                            file = File(updateDir, "update_${System.currentTimeMillis()}_${asset.name}")
-                        }
-                    }
-                }
-
-                val downloadClient = client.newBuilder()
-                    .followRedirects(true)
-                    .followSslRedirects(true)
-                    .build()
-
-                val requestBuilder = Request.Builder()
-                    .url(asset.browserDownloadUrl)
+                val policy = com.alananasss.kittytune.data.updates.UpdateDownloadPolicy
+                val name = policy.safeAssetName(asset.name)
+                require(java.net.URI(asset.browserDownloadUrl).scheme == "https") { "Update URL must use HTTPS" }
+                val updateDir = File(AppDirs.cacheDir, "updates").apply { mkdirs() }
+                val file = File(updateDir, "update_$name")
+                val requestedOffset = if (isResuming && file.isFile) file.length() else 0L
+                val request = Request.Builder().url(asset.browserDownloadUrl)
                     .header("User-Agent", "KittyTuneDesktop")
-
-                if (existingLength > 0) {
-                    requestBuilder.header("Range", "bytes=$existingLength-")
-                }
-
-                val response = downloadClient.newCall(requestBuilder.build()).execute()
-
-                if (!response.isSuccessful && response.code != 206) {
-                    throw Exception("HTTP Error ${response.code}")
-                }
-
-                val body = response.body
-                val contentLength = body.contentLength()
-                val totalSize = if (response.code == 206 || existingLength > 0) {
-                    existingLength + (if (contentLength > 0) contentLength else 0L)
-                } else {
-                    if (contentLength > 0) contentLength else asset.size
-                }
-
-                _downloadSize.value = totalSize
-
-                try {
+                    .apply { if (requestedOffset > 0) header("Range", "bytes=$requestedOffset-") }
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    require(response.isSuccessful) { "HTTP error ${response.code}" }
+                    val offset = policy.resumeOffset(requestedOffset, response.code, response.header("Content-Range"))
+                    val body = response.body
+                    val responseSize = body.contentLength()
+                    val expectedSize = if (asset.size > 0) asset.size
+                        else if (responseSize >= 0) offset + responseSize else 0L
+                    _downloadSize.value = expectedSize
+                    _downloadProgress.value = if (expectedSize > 0) offset.toFloat() / expectedSize else 0f
                     body.byteStream().use { input ->
-                        FileOutputStream(file, existingLength > 0).use { output ->
-                            val buffer = ByteArray(8 * 1024)
-                            var bytesCopied = existingLength
-                            var read: Int
-                            while (input.read(buffer).also { read = it } >= 0) {
-                                if (_status.value == UpdateStatus.PAUSED) {
-                                    return@withContext
-                                }
-                                if (_status.value != UpdateStatus.DOWNLOADING) {
-                                    output.close()
-                                    runCatching { file.delete() }
-                                    return@withContext
-                                }
-                                output.write(buffer, 0, read)
-                                bytesCopied += read
-                                if (totalSize > 0) {
-                                    _downloadProgress.value = bytesCopied.toFloat() / totalSize.toFloat()
-                                }
+                        FileOutputStream(file, offset > 0).use { output ->
+                            val buffer = ByteArray(32 * 1024)
+                            var copied = offset
+                            while (true) {
+                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                                if (_status.value != UpdateStatus.DOWNLOADING) return@withContext
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                output.write(buffer, 0, count)
+                                copied += count
+                                require(expectedSize <= 0 || copied <= expectedSize) { "Update exceeds expected size" }
+                                if (expectedSize > 0) _downloadProgress.value = (copied.toFloat() / expectedSize).coerceIn(0f, 1f)
                             }
                             output.flush()
                         }
                     }
-                } catch (e: java.io.FileNotFoundException) {
-                    val fallbackFile = File(File(System.getProperty("java.io.tmpdir"), "KittyTuneUpdates"), "update_${System.currentTimeMillis()}_${asset.name}")
-                    body.byteStream().use { input ->
-                        FileOutputStream(fallbackFile, false).use { output ->
-                            val buffer = ByteArray(8 * 1024)
-                            var bytesCopied = 0L
-                            var read: Int
-                            while (input.read(buffer).also { read = it } >= 0) {
-                                if (_status.value == UpdateStatus.PAUSED || _status.value != UpdateStatus.DOWNLOADING) {
-                                    output.close()
-                                    runCatching { fallbackFile.delete() }
-                                    return@withContext
-                                }
-                                output.write(buffer, 0, read)
-                                bytesCopied += read
-                                if (totalSize > 0) {
-                                    _downloadProgress.value = bytesCopied.toFloat() / totalSize.toFloat()
-                                }
-                            }
-                            output.flush()
-                        }
-                    }
-                    file = fallbackFile
+                    policy.requireComplete(file.length(), expectedSize)
                 }
-
-                if (_status.value == UpdateStatus.PAUSED) {
-                    return@withContext
-                }
-
-                if (_status.value != UpdateStatus.DOWNLOADING) {
-                    file.delete()
-                    return@withContext
-                }
-
+                if (_status.value != UpdateStatus.DOWNLOADING) return@withContext
                 downloadedInstallerFile = file
-
-                // Step 2: Perform background installation within KittyTune UI
+                _downloadProgress.value = 1f
                 _status.value = UpdateStatus.INSTALLING
                 performBackgroundInstall(file)
-            } catch (e: Exception) {
-                e.printStackTrace()
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                if (_status.value == UpdateStatus.DOWNLOADING) _status.value = UpdateStatus.PAUSED
+                throw cancelled
+            } catch (error: Exception) {
+                error.printStackTrace()
                 _status.value = UpdateStatus.ERROR
             } finally {
                 _downloadSize.value = 0L
@@ -399,54 +343,13 @@ object UpdateManager {
 
             val osName = System.getProperty("os.name", "").lowercase()
 
-            // On Windows, the installer (Inno Setup) cannot replace files that are currently in use.
-            // Strategy:
-            //   1. Write a PowerShell helper script that waits for this process to exit,
-            //      then runs the installer silently, then relaunches KittyTune.
-            //   2. Launch the script detached (it blocks on WaitForExit).
-            //   3. Set status to READY_TO_INSTALL — the user chooses when to restart.
-            //   4. When the user clicks "Restart", restartApp() simply calls exitProcess(0)
-            //      and the already-running PS script takes over.
+            // Windows must release its executable and runtime before MSI replaces files.
+            // Prepare now; the restart button launches the helper and exits this process.
             if (osName.contains("win")) {
-                _status.value = UpdateStatus.INSTALLING
-
-                val installerPath = file.absolutePath
-                val isMsi = file.name.endsWith(".msi", ignoreCase = true)
-                val msiLogFilePath = File(System.getProperty("java.io.tmpdir"), "kittytune_msi.log").absolutePath
-
-                val exitCode = try {
-                    if (isMsi) {
-                        val process = ProcessBuilder(
-                            "msiexec.exe",
-                            "/i", installerPath,
-                            "/qn", "/norestart",
-                            "MSIINSTALLPERUSER=1", "ALLUSERS=2",
-                            "MSIRESTARTMANAGERCONTROL=Disable",
-                            "REBOOT=ReallySuppress",
-                            "/l*v", msiLogFilePath
-                        ).start()
-                        currentInstallProcess = process
-                        process.waitFor()
-                    } else {
-                        val process = ProcessBuilder(
-                            installerPath,
-                            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-"
-                        ).start()
-                        currentInstallProcess = process
-                        process.waitFor()
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    -1
-                } finally {
-                    currentInstallProcess = null
-                }
-
-                if (exitCode == 0) {
-                    _status.value = UpdateStatus.READY_TO_INSTALL
-                } else {
-                    _status.value = UpdateStatus.ERROR
-                }
+                require(file.extension.equals("msi", ignoreCase = true)) { "Unsupported Windows installer" }
+                require(file.isFile && file.length() > 0) { "Installer is missing or empty" }
+                require(windowsApplicationFile() != null) { "Updates require an installed KittyTune application" }
+                _status.value = UpdateStatus.READY_TO_INSTALL
                 return
             }
 
@@ -518,9 +421,11 @@ object UpdateManager {
                         _status.value = UpdateStatus.AUTH_FAILED
                         return
                     }
+                    if (exitCode != 0) error("Installer failed with code $exitCode")
                 } else {
                     _status.value = UpdateStatus.INSTALLING
-                    process.waitFor()
+                    val exitCode = process.waitFor()
+                    if (exitCode != 0) error("Installer failed with code $exitCode")
                 }
                 currentInstallProcess = null
             }
@@ -538,6 +443,10 @@ object UpdateManager {
             val osName = System.getProperty("os.name", "").lowercase()
             when {
                 osName.contains("win") -> {
+                    if (_status.value == UpdateStatus.READY_TO_INSTALL && downloadedInstallerFile != null) {
+                        launchWindowsUpdateHelper(requireNotNull(downloadedInstallerFile))
+                        kotlin.system.exitProcess(0)
+                    }
                     val jpackagePath = System.getProperty("jpackage.app.path")
                     val possibleExePaths = mutableListOf<File>()
                     jpackagePath?.let { p ->
@@ -647,7 +556,8 @@ object UpdateManager {
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            relaunchJavaDevMode()
+            _status.value = UpdateStatus.ERROR
+            return
         }
         if (launched) {
             Thread.sleep(500)
@@ -662,6 +572,30 @@ object UpdateManager {
         } else {
             kotlin.system.exitProcess(0)
         }
+    }
+
+    private fun windowsApplicationFile(): File? {
+        val packagedPath = System.getProperty("jpackage.app.path") ?: return null
+        val location = File(packagedPath)
+        return (if (location.isDirectory) File(location, "KittyTune.exe") else location)
+            .takeIf { it.isFile && it.extension.equals("exe", ignoreCase = true) }
+    }
+
+    private fun launchWindowsUpdateHelper(installer: File) {
+        val executable = requireNotNull(windowsApplicationFile()) { "Installed executable not found" }
+        val helperDirectory = java.nio.file.Files.createTempDirectory("KittyTuneUpdate-").toFile()
+        val helper = File(helperDirectory, "install.ps1")
+        val resource = requireNotNull(javaClass.getResourceAsStream("/update/install-windows.ps1"))
+        resource.use { input -> helper.outputStream().use { input.copyTo(it) } }
+        val log = File(helperDirectory, "install.log")
+        ProcessBuilder(
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden",
+            "-ExecutionPolicy", "Bypass", "-File", helper.absolutePath,
+            "-ApplicationProcessId", ProcessHandle.current().pid().toString(),
+            "-InstallerPath", installer.absolutePath,
+            "-ApplicationPath", executable.absolutePath, "-LogPath", log.absolutePath
+        ).redirectOutput(File(helperDirectory, "helper.log"))
+            .redirectErrorStream(true).start()
     }
 
     private fun relaunchJavaDevMode() {

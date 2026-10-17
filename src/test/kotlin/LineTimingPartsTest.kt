@@ -24,6 +24,31 @@ class LineTimingPartsTest {
     }
 
     @Test
+    fun backingGroupsKeepExistingPunctuationWithoutAnotherComma() {
+        assertEquals("say" to "again, oh", splitBackingVocals("say (again,) (oh)"))
+        assertEquals("say" to "again! oh", splitBackingVocals("say (again!) (oh)"))
+        assertEquals("say" to "again, oh, yeah", splitBackingVocals("say (again,) (oh) (yeah)"))
+    }
+
+    @Test
+    fun wordTimedBackingKeepsExistingCommaAndTimings() {
+        val line = LyricLine(
+            text = "say (again,) (oh)",
+            startTime = 0,
+            endTime = 2_000,
+            words = words("say " to 0, "(again,) " to 300, "(oh)" to 600),
+        )
+
+        val (_, backing) = separateBackingVocals(line)
+
+        assertEquals("again, oh", backing!!.text)
+        assertEquals(listOf(300L, 600L), backing.words.map { it.startTime })
+        val karaoke = buildSyncedLyrics(listOf(line), isWordSynced = true, splitBacking = true)
+        val main = assertIs<KaraokeLine.MainKaraokeLine>(karaoke.lines.single())
+        assertEquals("again, oh", main.accompanimentLines!!.single().syllables.joinToString("") { it.content })
+    }
+
+    @Test
     fun aLineThatIsAllBracketsOrHasNoneStaysWhole() {
         assertEquals("(ooh, ooh)" to null, splitBackingVocals("(ooh, ooh)"))
         assertEquals("no brackets here" to null, splitBackingVocals("no brackets here"))

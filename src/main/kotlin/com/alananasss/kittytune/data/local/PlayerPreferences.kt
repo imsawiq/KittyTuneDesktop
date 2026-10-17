@@ -11,7 +11,9 @@ import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.io.File
-import java.io.FileReader
+import java.nio.file.Files
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.StandardCopyOption
 import com.alananasss.kittytune.data.lyrics.providers.PreferredLyricsProvider
 import com.alananasss.kittytune.data.lyrics.providers.DefaultLyricsProviderOrder
 import com.alananasss.kittytune.data.lyrics.providers.deserializeLyricsProviderOrder
@@ -127,6 +129,7 @@ class PlayerPreferences {
         private const val KEY_SOUNDCLOUD_HISTORY_SYNC = "soundcloud_history_sync_enabled"
         private const val KEY_TRACK_JSON = "last_track_json"
         private const val KEY_POSITION = "last_position"
+        private const val KEY_QUEUE_INDEX = "last_queue_index"
         private const val KEY_EFFECTS = "audio_effects"
         private const val KEY_CONTEXT_JSON = "last_context_json"
         private const val KEY_SHUFFLE_MODE = "shuffle_mode_enabled"
@@ -1505,23 +1508,32 @@ class PlayerPreferences {
         Prefs.putString("paxsenix_api_key", key)
     }
 
-    fun savePlaybackState(track: Track?, position: Long, queue: List<Track>, context: PlaybackContext?, shuffleEnabled: Boolean, repeatMode: RepeatMode, saveQueue: Boolean = true) {
+    fun savePlaybackState(
+        track: Track?, position: Long, queue: List<Track>, context: PlaybackContext?,
+        shuffleEnabled: Boolean, repeatMode: RepeatMode, saveQueue: Boolean = true,
+        originalQueue: List<Track> = queue, currentQueueIndex: Int = -1,
+    ) {
         if (!getPersistentQueueEnabled()) {
             Prefs.putBoolean(KEY_SHUFFLE_MODE, shuffleEnabled)
             Prefs.putString(KEY_REPEAT_MODE, repeatMode.name)
             Prefs.remove(KEY_TRACK_JSON)
             if (queueFile.exists()) queueFile.delete()
             Prefs.remove(KEY_POSITION)
+            Prefs.remove(KEY_QUEUE_INDEX)
             Prefs.remove(KEY_CONTEXT_JSON)
             return
         }
 
-        if (saveQueue && queue.isNotEmpty()) {
+        if (saveQueue) {
             synchronized(queueLock) {
                 try {
                     val tempFile = File(queueFile.parentFile, "queue_cache.tmp")
-                    tempFile.writeText(gson.toJson(queue))
-                    tempFile.renameTo(queueFile)
+                    tempFile.writeText(gson.toJson(PlaybackQueueSnapshot.capture(queue, originalQueue)))
+                    try {
+                        Files.move(tempFile.toPath(), queueFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+                    } catch (_: AtomicMoveNotSupportedException) {
+                        Files.move(tempFile.toPath(), queueFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    }
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
@@ -1529,6 +1541,7 @@ class PlayerPreferences {
         }
 
         track?.let { Prefs.putString(KEY_TRACK_JSON, gson.toJson(it)) }
+        Prefs.putInt(KEY_QUEUE_INDEX, currentQueueIndex)
         Prefs.putString(KEY_CONTEXT_JSON, gson.toJson(context))
         if (getSavePositionEnabled()) Prefs.putLong(KEY_POSITION, position) else Prefs.remove(KEY_POSITION)
         Prefs.putBoolean(KEY_SHUFFLE_MODE, shuffleEnabled)
@@ -1546,21 +1559,22 @@ class PlayerPreferences {
     fun getDownloadLocation(): String? = Prefs.getString(KEY_DOWNLOAD_DIR, null)
     fun getLastTrack(): Track? { if (!getPersistentQueueEnabled()) return null; val json = Prefs.getString(KEY_TRACK_JSON, null) ?: return null; return try { gson.fromJson(json, Track::class.java) } catch (_: Exception) { null } }
     fun getLastPosition(): Long = if (getSavePositionEnabled()) Prefs.getLong(KEY_POSITION, 0L) else 0L
-    fun getLastQueue(): List<Track> {
-        if (!getPersistentQueueEnabled()) return emptyList()
+    fun getLastQueueIndex(): Int = Prefs.getInt(KEY_QUEUE_INDEX, -1)
+    fun getLastQueue(): List<Track> = getLastQueueSnapshot().tracks
+
+    fun getLastQueueSnapshot(): PlaybackQueueSnapshot {
+        if (!getPersistentQueueEnabled()) return PlaybackQueueSnapshot()
         if (queueFile.exists()) {
             return synchronized(queueLock) {
                 try {
-                    val type = object : TypeToken<List<Track>>() {}.type
-                    FileReader(queueFile).use { reader -> gson.fromJson(reader, type) ?: emptyList() }
+                    PlaybackQueueSnapshot.decode(queueFile.readText(), gson)
                 } catch (_: Exception) {
-                    emptyList()
+                    PlaybackQueueSnapshot()
                 }
             }
         }
-        val json = Prefs.getString("last_queue_full_json", null) ?: return emptyList()
-        val type = object : TypeToken<List<Track>>() {}.type
-        return try { gson.fromJson(json, type) ?: emptyList() } catch (_: Exception) { emptyList() }
+        val json = Prefs.getString("last_queue_full_json", null) ?: return PlaybackQueueSnapshot()
+        return try { PlaybackQueueSnapshot.decode(json, gson) } catch (_: Exception) { PlaybackQueueSnapshot() }
     }
     fun getLastContext(): PlaybackContext? { if (!getPersistentQueueEnabled()) return null; val json = Prefs.getString(KEY_CONTEXT_JSON, null) ?: return null; return try { gson.fromJson(json, PlaybackContext::class.java) } catch (_: Exception) { null } }
     fun getLastShuffleEnabled(): Boolean = Prefs.getBoolean(KEY_SHUFFLE_MODE, false)

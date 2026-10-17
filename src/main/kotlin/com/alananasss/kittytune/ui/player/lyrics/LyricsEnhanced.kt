@@ -403,7 +403,8 @@ fun buildSyncedLyrics(
                 )
             }
 
-            val lineStart = entry.startTime.coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+            val lineStart = minOf(entry.startTime, wordsForMain.minOf { it.startTime })
+                .coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
             // Never before the last word ends: a line whose end time falls short of its words (the source's own
             // rounding, or the next line's start) stopped being the sung line while "за ужин" was still being
             // sung, and the view moved on before the fill got there (issue #66).
@@ -564,7 +565,7 @@ private fun backingGroupContents(groups: List<List<LyricWord>>): List<String> =
             val text = LyricsUtils.decodeHtmlEntities(word.text)
             when {
                 wordIndex < group.lastIndex -> "$text "
-                groupIndex < groups.lastIndex -> text + BACKING_SEPARATOR
+                groupIndex < groups.lastIndex -> text + backingSeparatorAfter(text)
                 else -> text
             }
         }

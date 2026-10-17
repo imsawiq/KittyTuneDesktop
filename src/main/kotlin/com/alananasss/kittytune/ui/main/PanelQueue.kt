@@ -356,7 +356,7 @@ private fun ReorderableCollectionItemScope.QueueRow(
             .hoverable(interactionSource)
             .onClick(
                 matcher = PointerMatcher.mouse(PointerButton.Secondary),
-                onClick = { vm.showTrackOptions(track) }
+                onClick = { vm.showTrackOptions(track, queueIndex = index) }
             )
             .clickable(interactionSource = interactionSource, indication = null) { vm.skipToQueueItem(index) }
             .padding(horizontal = 8.dp, vertical = if (isPast) 4.dp else 6.dp)

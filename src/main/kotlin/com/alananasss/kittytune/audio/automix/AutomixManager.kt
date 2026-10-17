@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -42,6 +43,17 @@ object AutomixManager {
     private val immediateAnalysisMutex = Mutex()
     private val lookaheadAnalysisMutex = Mutex()
     private val failedSongIds = ConcurrentHashMap<String, Long>()
+    @Volatile private var debugPair: Pair<Long, Long>? = null
+
+    private fun updateAnalysisDebug(track: Track, update: (AutomixDebugInfo, Boolean) -> AutomixDebugInfo) {
+        _automixDebugInfo.update { current ->
+            val pair = debugPair
+            val isCurrent = MusicManager.currentTrack?.id == track.id
+            val isNext = pair?.second == track.id && pair.first == MusicManager.currentTrack?.id
+            if (!isCurrent && !isNext) current
+            else update(current ?: AutomixDebugInfo("standby"), isCurrent)
+        }
+    }
 
     private val scope = CoroutineScope(Dispatchers.IO)
 
@@ -176,22 +188,17 @@ object AutomixManager {
 
     private suspend fun runBeatAnalysis(track: Track, priority: BeatAnalysisPriority) {
         val songId = track.id.toString()
-        val isCurrent = MusicManager.currentTrack?.id == track.id
-        val currentDbg = _automixDebugInfo.value ?: AutomixDebugInfo("standby")
-
         val existing = AppDatabase.beatInfoDao.getBeatInfo(songId)
         if (existing != null && existing.bpm > 0f) {
-            if (isCurrent) {
-                _automixDebugInfo.value = currentDbg.copy(
+            updateAnalysisDebug(track) { current, playing ->
+                if (playing) current.copy(
                     outTitle = track.title,
                     outBpm = existing.bpm,
                     outConfidence = existing.confidence,
                     outMixOutMs = existing.mixOutPointMs,
                     outKey = keyName(existing.keyPitchClass, existing.keyIsMinor),
                     outCamelot = camelotCode(existing.keyPitchClass, existing.keyIsMinor),
-                )
-            } else {
-                _automixDebugInfo.value = currentDbg.copy(
+                ) else current.copy(
                     inTitle = track.title,
                     inBpm = existing.bpm,
                     inConfidence = existing.confidence,
@@ -203,11 +210,13 @@ object AutomixManager {
             return
         }
 
-        _automixDebugInfo.value = currentDbg.copy(
-            status = if (isCurrent) "Analyzing '${track.title}'..." else "Analyzing next: '${track.title}'...",
-            outTitle = if (isCurrent) track.title else currentDbg.outTitle,
-            inTitle = if (!isCurrent) track.title else currentDbg.inTitle,
-        )
+        updateAnalysisDebug(track) { current, playing ->
+            current.copy(
+                status = if (playing) "Analyzing '${track.title}'..." else "Analyzing next: '${track.title}'...",
+                outTitle = if (playing) track.title else current.outTitle,
+                inTitle = if (!playing) track.title else current.inTitle,
+            )
+        }
 
         Logger.d(TAG, "Beat analysis starting for $songId - ${track.title} ($priority)")
         val startedAt = System.currentTimeMillis()
@@ -280,18 +289,16 @@ object AutomixManager {
             AppDatabase.beatInfoDao.upsert(entity)
         }
 
-        val updatedDbg = _automixDebugInfo.value ?: currentDbg
-        if (isCurrent) {
-            _automixDebugInfo.value = updatedDbg.copy(
+        failedSongIds.remove(songId)
+        updateAnalysisDebug(track) { current, playing ->
+            if (playing) current.copy(
                 outTitle = track.title,
                 outBpm = result.bpm,
                 outConfidence = result.confidence,
                 outMixOutMs = result.mixOutPointMs,
                 outKey = keyName(result.keyPitchClass, result.keyIsMinor),
                 outCamelot = camelotCode(result.keyPitchClass, result.keyIsMinor),
-            )
-        } else {
-            _automixDebugInfo.value = updatedDbg.copy(
+            ) else current.copy(
                 inTitle = track.title,
                 inBpm = result.bpm,
                 inConfidence = result.confidence,
@@ -309,6 +316,7 @@ object AutomixManager {
         trackDuration: Long,
         prefs: PlayerPreferences,
     ): AutomixPlanResult {
+        debugPair = currentTrack.id to nextTrack.id
         val currentId = currentTrack.id.toString()
         val nextId = nextTrack.id.toString()
 
@@ -335,8 +343,8 @@ object AutomixManager {
             inCamelot = camelotCode(inBeat?.keyPitchClass, inBeat?.keyIsMinor),
         )
 
-        val isOutFailed = failedSongIds.containsKey(currentId) || (outBeat != null && outBeat.bpm <= 0f)
-        val isInFailed = failedSongIds.containsKey(nextId) || (inBeat != null && inBeat.bpm <= 0f)
+        val isOutFailed = failedSongIds[currentId]?.let { System.currentTimeMillis() - it < 45_000L } == true || (outBeat != null && outBeat.bpm <= 0f)
+        val isInFailed = failedSongIds[nextId]?.let { System.currentTimeMillis() - it < 45_000L } == true || (inBeat != null && inBeat.bpm <= 0f)
 
         if (isOutFailed || isInFailed) {
             _automixDebugInfo.value = partialDebug.copy(

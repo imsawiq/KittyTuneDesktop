@@ -2962,4 +2962,11 @@
     <string name="full_player_cover_feather">Soften cover edges</string>
     <string name="full_player_cover_feather_desc">Fade the cover into the background while lyrics are shown</string>
     <string name="full_player_cover_feather_amount">Edge blur strength</string>
+    <string name="lyrics_source_file">From file</string>
+    <string name="lyrics_sync_edit_start">At song start</string>
+    <string name="lyrics_sync_edit_end">At song end</string>
+    <string name="lyrics_sync_earlier">Decrease offset by 0.1 s</string>
+    <string name="lyrics_sync_later">Increase offset by 0.1 s</string>
+    <string name="update_ready_title">Update ready to install</string>
+    <string name="update_ready_desc">Restart closes KittyTune, installs the update, and opens it again. Windows may ask for permission to install.</string>
 </resources>

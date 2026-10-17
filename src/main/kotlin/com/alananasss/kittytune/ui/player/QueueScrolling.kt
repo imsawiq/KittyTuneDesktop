@@ -33,7 +33,8 @@ internal fun AnchorCurrentQueueItem(
     currentKey: Any? = null,
     targetIndex: Int = (currentIndex - 1).coerceAtLeast(0),
 ) {
-    LaunchedEffect(currentIndex, currentTrackId, targetIndex) {
+    // Moving rows changes indices without changing playback. Keep the listener's viewport in place.
+    LaunchedEffect(currentTrackId) {
         if (currentIndex < 0 || targetIndex < 0) return@LaunchedEffect
 
         val visible = listState.layoutInfo.visibleItemsInfo

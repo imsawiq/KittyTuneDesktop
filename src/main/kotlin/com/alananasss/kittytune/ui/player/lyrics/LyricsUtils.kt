@@ -270,7 +270,7 @@ object LyricsUtils {
      * @return the line index, or -1 before the first line starts.
      */
     fun activeLineIndex(lines: List<LyricLine>, positionMs: Long): Int =
-        lines.indexOfLast { positionMs >= it.startTime }
+        lines.indexOfLast { positionMs >= minOf(it.startTime, it.words.minOfOrNull { word -> word.startTime } ?: it.startTime) }
 
     /**
      * Where a click on [line] should move the playhead, or null when it should move nothing.

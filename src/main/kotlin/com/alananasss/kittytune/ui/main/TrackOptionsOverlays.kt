@@ -516,7 +516,7 @@ private fun MenuSheetContent(viewModel: PlayerViewModel) {
                 )
             }
             if (!viewModel.isMenuContextFromPlayer) {
-                add(MenuOptionItem("play_next", Icons.AutoMirrored.Rounded.PlaylistPlay, str("menu_play_next")) { viewModel.insertNext(listOf(track)); viewModel.showMenuSheet = false })
+                add(MenuOptionItem("play_next", Icons.AutoMirrored.Rounded.PlaylistPlay, str("menu_play_next")) { viewModel.playMenuTrackNext(track); viewModel.showMenuSheet = false })
                 add(MenuOptionItem("add_queue", Icons.AutoMirrored.Rounded.QueueMusic, str("menu_add_queue")) { viewModel.addToQueue(listOf(track)); viewModel.showMenuSheet = false })
             }
             // In a shared playlist a song can go next for everyone, or be offered to the playlist itself.
@@ -1212,6 +1212,14 @@ internal suspend fun loadPlaylistTracksForMenu(
 @Composable
 private fun CommentsSheetContent(viewModel: PlayerViewModel) {
     val track = viewModel.selectedTrackForSheet ?: viewModel.trackForMenu ?: viewModel.currentTrack
+    val commentsListState = androidx.compose.foundation.lazy.rememberLazyListState()
+    var sortScrollPosition by remember(track?.id) { mutableStateOf<Pair<Int, Int>?>(null) }
+    LaunchedEffect(viewModel.commentsLoadRevision) {
+        sortScrollPosition?.let { (index, offset) ->
+            commentsListState.scrollToItem(index, offset)
+            sortScrollPosition = null
+        }
+    }
     var newCommentText by remember { mutableStateOf("") }
     val isPosting = viewModel.isPostingComment
 
@@ -1301,7 +1309,12 @@ private fun CommentsSheetContent(viewModel: PlayerViewModel) {
             com.alananasss.kittytune.ui.common.IconChoiceButton(
                 options = CommentSort.entries,
                 selected = viewModel.commentSort,
-                onSelect = viewModel::onCommentSortChanged,
+                onSelect = { sort ->
+                    if (sort != viewModel.commentSort) {
+                        sortScrollPosition = commentsListState.firstVisibleItemIndex to commentsListState.firstVisibleItemScrollOffset
+                        viewModel.onCommentSortChanged(sort)
+                    }
+                },
                 icon = { it.icon },
                 label = { str(it.labelResId) },
                 tooltip = { str("sorted_by", str(it.labelResId)) },
@@ -1326,6 +1339,7 @@ private fun CommentsSheetContent(viewModel: PlayerViewModel) {
                 }
             } else {
                 LazyColumn(
+                    state = commentsListState,
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                     contentPadding = PaddingValues(vertical = 8.dp)

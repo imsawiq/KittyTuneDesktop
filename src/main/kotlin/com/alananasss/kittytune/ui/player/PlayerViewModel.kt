@@ -32,6 +32,8 @@ import com.alananasss.kittytune.ui.player.lyrics.LyricsUtils
 import com.alananasss.kittytune.ui.player.lyrics.LyricSinger
 import com.google.gson.Gson
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -102,6 +104,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     private val gson = Gson()
     private val lyricsOverridesPrefs =
         com.alananasss.kittytune.core.NamedPrefs("lyrics_overrides")
+    private val lyricsOverrides = LyricsOverrideStore(
+        read = { key -> lyricsOverridesPrefs.getString(key, null) },
+        write = { key, value -> lyricsOverridesPrefs.putString(key, value) },
+    )
     private val trackGainPrefs =
         com.alananasss.kittytune.core.NamedPrefs("track_gain")
 
@@ -113,19 +119,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
      * hand, remember it per track so future plays reuse that exact choice.
      */
     private fun saveLyricsOverride(trackId: Long, result: UnifiedLyricResult) {
-        if (trackId <= 0L) return
         try {
-            lyricsOverridesPrefs.putString("override_$trackId", gson.toJson(result))
+            lyricsOverrides.put(trackId, result)
         } catch (e: Exception) {
             e.printStackTrace()
         }
     }
 
     private fun getLyricsOverride(trackId: Long): UnifiedLyricResult? {
-        if (trackId <= 0L) return null
         return try {
-            val raw = lyricsOverridesPrefs.getString("override_$trackId", null)
-            raw?.takeIf { it.isNotBlank() }?.let { gson.fromJson(it, UnifiedLyricResult::class.java) }
+            lyricsOverrides.getImported(trackId) ?: lyricsOverrides.get(trackId)
         } catch (e: Exception) {
             null
         }
@@ -333,6 +336,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     var showMenuSheet by mutableStateOf(false)
     var navigateToPlaylistId by mutableStateOf<String?>(null)
     var trackForMenu by mutableStateOf<Track?>(null)
+    private var menuContextQueueIndex: Int? = null
     var menuContextPlaylistId by mutableStateOf<Long?>(null)
     var isMenuContextFromPlayer by mutableStateOf(false)
 
@@ -349,6 +353,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     val commentsList = mutableStateListOf<Comment>()
     var isCommentsLoading by mutableStateOf(false)
     var commentNextHref: String? = null
+    var commentsLoadRevision by mutableStateOf(0)
+        private set
+    private var commentsJob: Job? = null
+    private var commentsGeneration = 0L
+    private var commentsTrack: Track? = null
+    private var loadedCommentSort = CommentSort.NEWEST
     var isPostingComment by mutableStateOf(false)
     var captchaUrl by mutableStateOf<String?>(null)
 
@@ -1179,7 +1189,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         val deadline = System.currentTimeMillis() + TRIM_RESUME_TIMEOUT_MS
         while (System.currentTimeMillis() < deadline) {
             if (!isPlaying) return
-            if (player.currentPosition > seekedToMs) return
+            if (!player.isSeeking) return
             delay(TRIM_TICK_MS)
         }
     }
@@ -1211,6 +1221,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     private var saveQueueJob: Job? = null
     private var progressUpdateJob: Job? = null
     private var lyricsJob: Job? = null
+    private var lyricsSelectionJob: Job? = null
+    private var lyricsImportJob: Job? = null
+    private var lyricsChoiceGeneration = 0L
+    private val lyricsOverrideMutex = Mutex()
 
     /**
      * Kept apart from [lyricsJob] so cancelling the current lookup — every track change does —
@@ -1712,9 +1726,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 val c = currentContext
                 val s = shuffleEnabled
                 val r = repeatMode
-                val q = _originalQueue.toList()
+                val q = _queue.toList()
+                val original = _originalQueue.toList()
+                val queueIndex = currentQueueIndex
                 if (t != null && p > 0) {
-                    playerPrefs.savePlaybackState(t, p, q, c, s, r)
+                    playerPrefs.savePlaybackState(t, p, q, c, s, r, originalQueue = original, currentQueueIndex = queueIndex)
                     com.alananasss.kittytune.core.Prefs.flush(force = true)
                 }
             })
@@ -1866,7 +1882,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     private fun syncStateFromPreferences() {
         viewModelScope.launch {
             val lastTrack = playerPrefs.getLastTrack()
-            val lastQueue = playerPrefs.getLastQueue()
+            val savedQueue = playerPrefs.getLastQueueSnapshot()
+            val lastQueue = savedQueue.tracks
+            val lastQueueIndex = playerPrefs.getLastQueueIndex()
             val lastContext = playerPrefs.getLastContext()
             val lastShuffle = playerPrefs.getLastShuffleEnabled()
             val lastRepeat = playerPrefs.getLastRepeatMode()
@@ -1874,7 +1892,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             _queue.clear()
             _queue.addAll(lastQueue)
             _originalQueue.clear()
-            _originalQueue.addAll(lastQueue)
+            _originalQueue.addAll(savedQueue.originalTracks())
             updateQueueState()
 
             currentTrack = lastTrack
@@ -1885,11 +1903,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
             if (lastTrack != null) {
                 isLiked = LikeRepository.isTrackLiked(lastTrack.id)
-                currentQueueIndex = _queue.indexOfFirst { it.id == lastTrack.id }.coerceAtLeast(0)
-            }
-            if (shuffleEnabled && _queue.size > 1) {
-                applyShuffle(currentQueueIndex)
-                updateQueueState()
+                currentQueueIndex = savedQueue.currentIndex(lastQueueIndex, lastTrack.id).coerceAtLeast(0)
             }
 
             try {
@@ -2092,6 +2106,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     private fun loadLyrics(track: Track) {
+        lyricsChoiceGeneration++
+        lyricsImportJob?.cancel()
         lyricsJob?.cancel()
         lyricsLines.clear()
         lyricsSync = com.alananasss.kittytune.data.LyricsSync.NONE
@@ -2163,7 +2179,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 return@launch
             }
 
-            val payload = resolveLyrics(track, queries, variant)
+            val payload = resolveLyrics(track, queries, variant) { provisional ->
+                withContext(Dispatchers.Main) {
+                    if (isActive && currentTrack?.id == track.id) applyLyricsPayload(provisional)
+                }
+            }
             if (!isActive) return@launch
 
             LyricsCache.put(
@@ -2353,6 +2373,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         track: Track,
         queries: List<String>,
         variant: LyricsVariant,
+        onImproved: suspend (LyricsPayload) -> Unit = {},
     ): LyricsPayload? = coroutineScope {
         PaxsenixClient.setApiKey(playerPrefs.getPaxsenixApiKey())
         val effectiveArtist = track.displayArtist.ifBlank { track.user?.username.orEmpty() }
@@ -2413,7 +2434,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                     }
             }
             PreferredLyricsProvider.GENIUS -> {
-                null
+                searchGeniusCandidate(queries, target)
             }
             else -> {
                 searchGenericProviderCandidate(
@@ -2427,24 +2448,48 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         }
         }
 
-        val answers = orderedProviders.map { providerId ->
-            async(Dispatchers.IO) {
-                withTimeoutOrNull(LYRICS_SOURCE_TIMEOUT_MS) { runCatching { candidateFrom(providerId) }.getOrNull() }
+        val answers = kotlinx.coroutines.channels.Channel<Pair<Int, LyricsCandidate?>>(orderedProviders.size)
+        val jobs = orderedProviders.mapIndexed { index, providerId ->
+            launch(Dispatchers.IO) {
+                val result = withTimeoutOrNull(LYRICS_SOURCE_TIMEOUT_MS) {
+                    try {
+                        candidateFrom(providerId)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        null
+                    }
+                }
+                answers.send(index to result)
             }
-        }.awaitAll()
-        val preferred = orderedProviders.withIndex().associate { (i, p) -> p to i }
-        var best: LyricsCandidate? = answers.withIndex()
-            .mapNotNull { (i, c) -> c?.takeIf { it.isUsable }?.let { i to it } }
-            .maxWithOrNull(
-                compareBy<Pair<Int, LyricsCandidate>> { (_, c) -> if (c.matchScore >= LyricsMatcher.CONFIDENT_MATCH) 1 else 0 }
-                    .thenBy { (_, c) -> c.syncTier }
-                    .thenBy { (_, c) -> c.rank }
-                    .thenByDescending { (i, _) -> i }
-            )?.second
-
-        if (best == null && playerPrefs.getLyricsProviderEnabled(PreferredLyricsProvider.GENIUS)) {
-            best = searchGeniusCandidate(queries, target)
         }
+        val ranking = compareBy<Pair<Int, LyricsCandidate>> { (_, c) -> if (c.matchScore >= LyricsMatcher.CONFIDENT_MATCH) 1 else 0 }
+            .thenBy { (_, c) -> c.syncTier }
+            .thenBy { (_, c) -> c.rank }
+            .thenByDescending { (i, _) -> i }
+        var bestAnswer: Pair<Int, LyricsCandidate>? = null
+        try {
+            repeat(jobs.size) {
+                val (index, candidate) = answers.receive()
+                if (candidate != null && candidate.isUsable) {
+                    val answer = index to candidate
+                    val previous = bestAnswer
+                    if (previous == null || ranking.compare(answer, previous) > 0) {
+                        bestAnswer = answer
+                        // Publish immediately; optional translations must not hold back the first lyric.
+                        onImproved(LyricsPayload(
+                            lines = candidate.lines.takeIf { candidate.syncTier >= LyricsMatcher.SYNC_TIER_LINE }.orEmpty(),
+                            plain = candidate.plain ?: candidate.lines.takeIf { it.isNotEmpty() }?.joinToString("\n") { it.text },
+                            provider = candidate.provider,
+                        ))
+                    }
+                }
+            }
+        } finally {
+            answers.cancel()
+            jobs.forEach { it.cancel() }
+        }
+        val best = bestAnswer?.second
 
         val candidate = best ?: return@coroutineScope null
         val syncedLines =
@@ -2641,6 +2686,20 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         updateLyricsSync(lyricsSync.adjustedAt(currentPosition, amount))
     }
 
+    /** Edits either end of the song without seeking or changing the visible lyric. */
+    fun adjustLyricsSyncEndpoint(atEnd: Boolean, amount: Long) {
+        val end = duration.takeIf { it >= com.alananasss.kittytune.data.LyricsSync.MIN_SPAN_MS }
+            ?: return
+        val sync = lyricsSync
+        val endpoints = com.alananasss.kittytune.data.LyricsSync(
+            offsetMs = sync.offsetAt(0L),
+            anchorMs = 0L,
+            endAtMs = end,
+            endOffsetMs = sync.offsetAt(end),
+        )
+        updateLyricsSync(endpoints.adjustedAt(if (atEnd) end else 0L, amount))
+    }
+
     fun resetLyricsOffset() {
         updateLyricsSync(com.alananasss.kittytune.data.LyricsSync.NONE)
     }
@@ -2674,21 +2733,33 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun loadCustomLyrics(content: String) {
-        viewModelScope.launch {
-            val trackDuration = currentTrack?.durationMs ?: 0L
-            val resultLines = LyricsUtils.parseLyricsContent(content, trackDuration)
-            withContext(Dispatchers.Main) {
-                lyricsLines.clear()
-                lyricsLines.addAll(resultLines)
-                rawPlainLyrics = if (resultLines.isNotEmpty()) {
-                    resultLines.joinToString("\n") { it.text }
-                } else {
-                    content
-                }
-                lyricsMode = if (resultLines.isNotEmpty()) LyricsMode.SYNCED else LyricsMode.PLAIN
-                isSearchingLyrics = false
-                isLyricsLoading = false
+        val track = currentTrack ?: return
+        if (content.isBlank()) return
+        lyricsImportJob?.cancel()
+        lyricsSelectionJob?.cancel()
+        lyricsJob?.cancel()
+        lyricsPrefetchJob?.cancel()
+        val generation = ++lyricsChoiceGeneration
+        val searchTrack = LyricsSearchTrack(
+            id = track.id.toString(),
+            title = track.title.orEmpty(),
+            artist = track.displayArtist.ifBlank { track.user?.username.orEmpty() },
+            album = track.publisherMetadata?.albumTitle,
+            durationMs = track.durationMs ?: 0L,
+        )
+        isLyricsLoading = true
+        lyricsImportJob = viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                ManualLyricsSearch.localResult(searchTrack, content)
             }
+            if (generation != lyricsChoiceGeneration || currentTrack?.id != track.id) return@launch
+            if (result == null) {
+                isLyricsLoading = false
+                return@launch
+            }
+            unifiedLyricSearchResults.removeAll { it.provider == "LOCAL" }
+            unifiedLyricSearchResults.add(0, result)
+            selectUnifiedLyricResult(result)
         }
     }
 
@@ -2786,6 +2857,15 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         manualLyricSearchJob = viewModelScope.launch {
             PaxsenixClient.setApiKey(playerPrefs.getPaxsenixApiKey())
             try {
+                val localResult = withContext(Dispatchers.IO) {
+                    val imported = lyricsOverrides.getImported(track.id)
+                    imported ?: DownloadManager.getLocalTrack(track.id)?.localAudioPath
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { LyricsUtils.extractLocalLyrics(it) }
+                        ?.let { ManualLyricsSearch.localResult(searchTrack, it) }
+                }
+                if (generation != manualSearchGeneration) return@launch
+                localResult?.let { unifiedLyricSearchResults.add(it) }
                 supervisorScope {
                     sources.forEach { source ->
                         launch(Dispatchers.IO) {
@@ -2843,20 +2923,24 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun selectUnifiedLyricResult(result: UnifiedLyricResult, isManualPick: Boolean = true) {
+        lyricsChoiceGeneration++
         // The automatic search has to be cut dead here. It was left running, so a slow resolution —
         // and it is slow once Genius is in the chain — finished after the manual pick and overwrote
         // it with whatever it had found, which is the "after some time it adds synchronised text
         // that does not match this song" report in issue #33.
         lyricsJob?.cancel()
         lyricsPrefetchJob?.cancel()
-        val pickedForTrackId = currentTrack?.id
-        viewModelScope.launch(Dispatchers.IO) {
-            isLyricsLoading = true
+        lyricsSelectionJob?.cancel()
+        val pickedTrack = currentTrack ?: return
+        val pickedForTrackId = pickedTrack.id
+        val pickedDuration = pickedTrack.durationMs ?: duration
+        isLyricsLoading = true
+        lyricsSelectionJob = viewModelScope.launch(Dispatchers.IO) {
             var finalLines = emptyList<LyricLine>()
             var finalPlain: String? = null
 
             if (result.rawContent != null) {
-                finalLines = LyricsUtils.parseLyricsContent(result.rawContent, duration)
+                finalLines = LyricsUtils.parseLyricsContent(result.rawContent, pickedDuration)
                 if (finalLines.isEmpty()) {
                     finalPlain = result.rawContent
                 }
@@ -2867,7 +2951,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                             val lrcData = LrcLibClient.api.getLyricsById(result.id.toLong())
                             val lyricsText = lrcData.lyricsfile ?: lrcData.syncedLyrics
                             if (!lyricsText.isNullOrEmpty()) {
-                                finalLines = LyricsUtils.parseLyricsContent(lyricsText, duration)
+                                finalLines = LyricsUtils.parseLyricsContent(lyricsText, pickedDuration)
                             }
                             finalPlain = lrcData.plainLyrics
                         } catch (e: Exception) {
@@ -2885,7 +2969,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                             if (playerPrefs.getLyricsTranslationEnabled()) playerPrefs.getLyricsTranslationLang() else null
                         lastFetchedMxmTrackId = result.id.toLongOrNull()
                         val data =
-                            MusixmatchClient.getLyricsData(result.id.toLong(), duration, targetLang, isRomanizationEnabled)
+                            MusixmatchClient.getLyricsData(result.id.toLong(), pickedDuration, targetLang, isRomanizationEnabled)
                         finalLines = data.first
                         finalPlain = data.second
                     }
@@ -2898,10 +2982,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                                 title = result.name,
                                 artist = result.artistName,
                                 album = result.albumName,
-                                duration = (duration / 1000).toInt()
+                                duration = (pickedDuration / 1000).toInt()
                             ).getOrNull()
                             if (!raw.isNullOrBlank()) {
-                                finalLines = LyricsUtils.parseLyricsContent(raw, duration)
+                                finalLines = LyricsUtils.parseLyricsContent(raw, pickedDuration)
                                 if (finalLines.isEmpty()) finalPlain = raw
                             }
                         }
@@ -2909,11 +2993,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 }
             }
 
-            if (!isManualPick && currentTrack?.id != pickedForTrackId) {
-                withContext(Dispatchers.Main) { isLyricsLoading = false }
-                return@launch
+            // Persist for the track that was picked, even if playback advanced during the fetch.
+            lyricsOverrideMutex.withLock {
+                ensureActive()
+                if (isManualPick && (finalLines.isNotEmpty() || !finalPlain.isNullOrBlank())) {
+                    saveLyricsOverride(pickedForTrackId, result)
+                    LyricsCache.invalidate(pickedForTrackId)
+                }
             }
             withContext(Dispatchers.Main) {
+                if (currentTrack?.id != pickedForTrackId) return@withContext
                 if (finalLines.isNotEmpty()) {
                     lyricsLines.clear()
                     lyricsLines.addAll(finalLines)
@@ -2936,14 +3025,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 currentLyricsSource = result.provider.takeIf { finalLines.isNotEmpty() || !finalPlain.isNullOrBlank() }
             }
 
-            // Remember the manual pick for the current track (issue #27), and drop the cached
-            // automatic match so it cannot come back on the next play.
-            if (isManualPick && (finalLines.isNotEmpty() || !finalPlain.isNullOrBlank())) {
-                currentTrack?.id?.let {
-                    saveLyricsOverride(it, result)
-                    LyricsCache.invalidate(it)
-                }
-            } else if (!isManualPick && finalLines.isNotEmpty() && pickedForTrackId != null) {
+            if (!isManualPick && finalLines.isNotEmpty()) {
                 // Found for the track rather than chosen by the listener: cached like an automatic match, so the
                 // timed copy is there from the start next time.
                 val variant = currentLyricsVariant()
@@ -3357,33 +3439,56 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun loadComments(refresh: Boolean = false, specificTrack: Track? = null) {
-        val t = specificTrack ?: selectedTrackForSheet ?: trackForMenu ?: currentTrack ?: return
-        if (refresh) {
-            commentsList.clear(); commentNextHref = null
+        val t = specificTrack ?: commentsTrack ?: selectedTrackForSheet ?: trackForMenu ?: currentTrack ?: return
+        val trackChanged = commentsTrack?.id != t.id
+        val replace = refresh || trackChanged
+        if (!replace && (isCommentsLoading || commentNextHref == null)) return
+        val previousCount = if (trackChanged) 0 else commentsList.size
+        val nextHref = commentNextHref
+        val requestedSort = commentSort
+        val generation = ++commentsGeneration
+        commentsJob?.cancel()
+        commentsTrack = t
+        if (trackChanged) {
+            commentsList.clear()
+            commentNextHref = null
         }
-        if (!refresh && commentNextHref == null && commentsList.isNotEmpty()) return
-
-        viewModelScope.launch {
-            if (refresh) isCommentsLoading = true
+        isCommentsLoading = true
+        commentsJob = viewModelScope.launch {
             try {
-                val response = if (refresh) {
-                    api.getTrackComments(trackId = t.id, limit = 20, threaded = 1, filterReplies = 1, sort = commentSort.value)
+                val response = if (replace) {
+                    val firstPage = api.getTrackComments(trackId = t.id, limit = 20, threaded = 1, filterReplies = 1, sort = requestedSort.value)
+                    loadCommentWindow(firstPage, previousCount.coerceAtLeast(20), api::getCommentsNextPage)
                 } else {
-                    api.getCommentsNextPage(commentNextHref!!)
+                    api.getCommentsNextPage(requireNotNull(nextHref))
                 }
-                commentNextHref = response.next_href
-                val newComments = response.collection.filter { c -> commentsList.none { it.id == c.id } }
-                commentsList.addAll(newComments)
-                checkCommentLikesStatus(t.id, newComments)
+                ensureActive()
+                if (generation != commentsGeneration) return@launch
+                val newComments = if (replace) response.collection else
+                    response.collection.filter { c -> commentsList.none { it.id == c.id } }
+                androidx.compose.runtime.snapshots.Snapshot.withMutableSnapshot {
+                    if (replace) commentsList.clear()
+                    commentsList.addAll(newComments)
+                    commentNextHref = response.next_href
+                    loadedCommentSort = requestedSort
+                    if (replace) commentsLoadRevision++
+                }
+                checkCommentLikesStatus(t.id, newComments, generation)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 e.printStackTrace()
+                if (generation == commentsGeneration && replace) {
+                    commentSort = loadedCommentSort
+                    commentsLoadRevision++
+                }
             } finally {
-                isCommentsLoading = false
+                if (generation == commentsGeneration) isCommentsLoading = false
             }
         }
     }
 
-    private suspend fun checkCommentLikesStatus(trackId: Long, comments: List<Comment>) {
+    private suspend fun checkCommentLikesStatus(trackId: Long, comments: List<Comment>, generation: Long) {
         if (comments.isEmpty()) return
         val targetUrns = mutableListOf<String>()
         comments.forEach { c ->
@@ -3399,6 +3504,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             val request = GraphQlRequest("UserInteractions", query, variables)
             try {
                 val responseJson = api.postGraphQl("https://graph.soundcloud.com/graphql", request)
+                currentCoroutineContext().ensureActive()
+                if (generation != commentsGeneration) return
                 val data = gson.fromJson(responseJson, GraphQlResponseUserInteractions::class.java)
                 data.data?.user?.forEach { interaction ->
                     val idStr = interaction.targetUrn.substringAfterLast(":")
@@ -3408,6 +3515,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                         interaction.interactionCounts?.find { it.type == "sc:interactiontypevalue:like" }?.count
                     updateCommentInList(commentId, isLikedByMe, totalLikes)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -4097,9 +4206,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     private fun revertShuffle() {
-        val currentTrackId =
-            currentTrack?.id ?: return; _queue.clear(); _queue.addAll(_originalQueue); currentQueueIndex =
-            _queue.indexOfFirst { it.id == currentTrackId }.coerceAtLeast(0)
+        val playing = _queue.getOrNull(currentQueueIndex) ?: return
+        _queue.clear()
+        _queue.addAll(_originalQueue)
+        currentQueueIndex = _queue.indexOfFirst { it === playing }.coerceAtLeast(0)
     }
 
     private fun applyRepeatMode() {
@@ -4134,7 +4244,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun moveQueueItem(from: Int, to: Int) {
-        if (from == to) return
+        if (from == to || from !in _queue.indices || to !in _queue.indices) return
 
         if (from < queueState.size && to < queueState.size) {
             val mut = queueState.toMutableList()
@@ -4243,6 +4353,20 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         preloadNextTrack(currentQueueIndex + 1)
 
         saveStateAsync(saveQueue = true)
+        emitUiEvent(str("menu_play_next"))
+    }
+
+    /** A queue menu moves its selected occurrence; a library menu adds a new one. */
+    fun playMenuTrackNext(track: Track) {
+        val from = menuContextQueueIndex
+        if (from == null) {
+            insertNext(listOf(track))
+            return
+        }
+        // The queue may have changed while the menu was open. Never move another occurrence.
+        if (_queue.getOrNull(from) !== track) return
+        val destination = queuePlayNextDestination(_queue.size, currentQueueIndex, from) ?: return
+        moveQueueItem(from, destination)
         emitUiEvent(str("menu_play_next"))
     }
 
@@ -4898,7 +5022,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    fun showTrackOptions(track: Track, playlistContextId: Long? = null, fromPlayer: Boolean = false) {
+    fun showTrackOptions(
+        track: Track,
+        playlistContextId: Long? = null,
+        fromPlayer: Boolean = false,
+        queueIndex: Int? = null,
+    ) {
+        menuContextQueueIndex = queueIndex
         trackForMenu = track; menuContextPlaylistId = playlistContextId; isMenuContextFromPlayer =
             fromPlayer; showMenuSheet = true
     }
@@ -5020,6 +5150,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         val c = currentContext
         val s = shuffleEnabled
         val r = repeatMode
+        val queueIndex = currentQueueIndex
         if (savePositionOnly) {
             playerPrefs.savePosition(p)
             return
@@ -5033,14 +5164,19 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 val freshC = currentContext
                 val freshS = shuffleEnabled
                 val freshR = repeatMode
+                val freshIndex = currentQueueIndex
+                val qSnapshot = _queue.toList()
+                val originalSnapshot = _originalQueue.toList()
                 withContext(Dispatchers.IO) {
-                    val qSnapshot = _originalQueue.toList()
-                    playerPrefs.savePlaybackState(freshT, freshP, qSnapshot, freshC, freshS, freshR)
+                    playerPrefs.savePlaybackState(
+                        freshT, freshP, qSnapshot, freshC, freshS, freshR,
+                        originalQueue = originalSnapshot, currentQueueIndex = freshIndex,
+                    )
                 }
             }
         } else {
             viewModelScope.launch(Dispatchers.IO) {
-                playerPrefs.savePlaybackState(t, p, emptyList(), c, s, r, saveQueue = false)
+                playerPrefs.savePlaybackState(t, p, emptyList(), c, s, r, saveQueue = false, currentQueueIndex = queueIndex)
             }
         }
     }
@@ -5379,7 +5515,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     private fun restoreSession() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val lastQueue = playerPrefs.getLastQueue()
+                val savedQueue = playerPrefs.getLastQueueSnapshot()
+                val lastQueue = savedQueue.tracks
+                val lastQueueIndex = playerPrefs.getLastQueueIndex()
                 val lastTrack = playerPrefs.getLastTrack()
                 val lastPosition = playerPrefs.getLastPosition()
                 val lastContext = playerPrefs.getLastContext()
@@ -5388,7 +5526,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 withContext(Dispatchers.Main) {
                     if (lastQueue.isNotEmpty()) {
                         _queue.clear(); _queue.addAll(lastQueue); _originalQueue.clear(); _originalQueue.addAll(
-                            lastQueue
+                            savedQueue.originalTracks()
                         ); updateQueueState()
                     }
                     if (lastTrack != null) {
@@ -5398,16 +5536,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                         currentTrack = lastTrack
                         MusicManager.currentTrack = lastTrack; isLiked =
                             LikeRepository.isTrackLiked(lastTrack.id); loadLyrics(lastTrack)
-                        currentQueueIndex = _queue.indexOfFirst { it.id == lastTrack.id }
+                        currentQueueIndex = savedQueue.currentIndex(lastQueueIndex, lastTrack.id)
                         if (currentQueueIndex == -1) {
                             _queue.add(0, lastTrack); _originalQueue.add(
                                 0,
                                 lastTrack
                             ); updateQueueState(); currentQueueIndex = 0
-                        }
-                        if (shuffleEnabled && _queue.size > 1) {
-                            applyShuffle(currentQueueIndex)
-                            updateQueueState()
                         }
                         val currentPlayerMediaId = MusicManager.player.currentMediaItem?.mediaId
                         Logger.e(
@@ -5456,7 +5590,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             }
 
             withContext(Dispatchers.IO) {
-                val savedQueue = playerPrefs.getLastQueue()
+                val snapshot = playerPrefs.getLastQueueSnapshot()
+                val savedQueue = snapshot.tracks
+                val savedQueueIndex = playerPrefs.getLastQueueIndex()
                 val savedContext = playerPrefs.getLastContext()
 
                 withContext(Dispatchers.Main) {
@@ -5464,15 +5600,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                         _queue.clear()
                         _queue.addAll(savedQueue)
                         _originalQueue.clear()
-                        _originalQueue.addAll(savedQueue)
+                        _originalQueue.addAll(snapshot.originalTracks())
                         updateQueueState()
 
                         if (currentTrack != null) {
-                            currentQueueIndex = _queue.indexOfFirst { it.id == currentTrack!!.id }.coerceAtLeast(0)
-                        }
-                        if (shuffleEnabled && _queue.size > 1) {
-                            applyShuffle(currentQueueIndex)
-                            updateQueueState()
+                            currentQueueIndex = snapshot.currentIndex(savedQueueIndex, currentTrack!!.id).coerceAtLeast(0)
                         }
                     }
                     if (savedContext != null) {
