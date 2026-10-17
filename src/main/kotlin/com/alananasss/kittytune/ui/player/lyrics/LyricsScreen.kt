@@ -125,7 +125,7 @@ import kotlin.math.roundToInt
         onClose: () -> Unit
     ) {
         val isSearching = viewModel.isSearchingLyrics
-        val currentTrack = viewModel.currentTrack
+        val currentTrack = viewModel.uiCurrentTrack
         var showQuickSettingsDialog by remember { mutableStateOf(false) }
         var showUploadYamlDialog by remember { mutableStateOf(false) }
 
@@ -393,14 +393,12 @@ import kotlin.math.roundToInt
     
     @Composable
     fun SyncedLyricsView(viewModel: PlayerViewModel) {
-        val currentPosition = viewModel.currentPosition
-        val adjustedPosition = currentPosition + viewModel.lyricsOffset
         val lyrics = viewModel.lyricsLines
         // Built on the line being sung, not on line one: the placement below runs after the first frame, and
         // that frame — the top of the song, mid-fade — was the jolt at every opening (issue #33, round 5).
-        val listState = key(viewModel.currentTrack?.id) {
+        val listState = key(viewModel.uiCurrentTrack?.id) {
             rememberLazyListState(
-                initialFirstVisibleItemIndex = LyricsUtils.activeLineIndex(lyrics, adjustedPosition).coerceAtLeast(0)
+                initialFirstVisibleItemIndex = LyricsUtils.activeLineIndex(lyrics, viewModel.uiCurrentPosition + viewModel.lyricsOffset).coerceAtLeast(0)
             )
         }
         val fontSize = viewModel.lyricsFontSize
@@ -412,13 +410,17 @@ import kotlin.math.roundToInt
 
         // Interpolated between the player's four-per-second reports so the word fill moves per frame.
         // Shared with the panel, which needs exactly the same thing for exactly the same reason
-        // (issue #33) — see [rememberSmoothPosition] for why the estimate is bounded.
+        // (issue #33) — see [rememberSmoothPosition] for why the estimate is bounded, and for why
+        // the State is handed on rather than read here.
+        //
+        // positionMs is a lambda so this composable doesn't recompose on every position tick (4–5×/sec).
+        // The smooth position is read via State<Float> in the draw phase only (audit Phase 3 CPU gain).
         val smoothDrawPosition = rememberSmoothPosition(
-            positionMs = currentPosition,
-            isPlaying = viewModel.isPlaying,
+            positionMs = { viewModel.uiCurrentPosition },
+            isPlaying = viewModel.uiIsPlaying,
             speed = viewModel.effectsState.speed,
         )
-    
+
         val fadeBrush = remember {
             Brush.verticalGradient(
                 0f to Color.Transparent,
@@ -427,9 +429,13 @@ import kotlin.math.roundToInt
                 1f to Color.Transparent
             )
         }
-    
-        val activeIndex = remember(adjustedPosition, lyrics) {
-            LyricsUtils.activeLineIndex(lyrics, adjustedPosition)
+
+        // Derived: the frame-clock position is recomputed every frame but observed only when the
+        // active line index actually changes. Computing the index from a per-frame value — as the
+        // `remember(adjustedPosition, lyrics)` this replaces did — recomposed the whole lyrics
+        // screen 4–5 times a second for the whole song (audit Phase 3 CPU gain).
+        val activeIndex by remember(lyrics) {
+            derivedStateOf { LyricsUtils.activeLineIndex(lyrics, viewModel.uiCurrentPosition + viewModel.lyricsOffset) }
         }
     
         // Reading along by hand wins for a while; the panel's copy of the lyrics follows the same
@@ -440,9 +446,7 @@ import kotlin.math.roundToInt
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val screenHeight = maxHeight
             val halfHeight = screenHeight / 2
-            // Little above the first line: the lyrics start at the top and come down to the middle as the song
-            // goes, instead of an empty half of the screen. The bottom keeps half, so the last line reaches the middle.
-            val topPadding = 24.dp
+            val topPadding = halfHeight
     
             LazyColumn(
                 state = listState,
@@ -454,7 +458,7 @@ import kotlin.math.roundToInt
                     .fadingEdge(fadeBrush),
                 verticalArrangement = Arrangement.spacedBy(24.dp)
             ) {
-                itemsIndexed(lyrics) { index, line ->
+                itemsIndexed(lyrics, key = { _, line -> "${line.startTime}-${line.endTime}" }) { index, line ->
                     val isActive = index == activeIndex
     
                     // Three ways to set the current line apart, asked for with screenshots of another
@@ -490,7 +494,7 @@ import kotlin.math.roundToInt
                     }
 
                     // For duet lines, override alignment per singer (normal style, no bubbles)
-                    val isDuetActive = viewModel.isDuetActiveForTrack(viewModel.currentTrack)
+                    val isDuetActive = viewModel.isDuetActiveForTrack(viewModel.uiCurrentTrack)
                     val effectiveSinger = if (isDuetActive) {
                         line.singer?.takeIf { it != LyricSinger.DEFAULT }
                             ?: when (line.agent?.trim()?.lowercase()) {
@@ -558,7 +562,7 @@ import kotlin.math.roundToInt
                                 LyricsUtils.seekTargetFor(
                                     line = line,
                                     lyricsOffsetMs = viewModel.lyricsOffsetAtLyricTime(line.startTime),
-                                    durationMs = viewModel.duration,
+                                    durationMs = viewModel.uiDuration,
                                 )?.let(viewModel::seekTo)
                             }
                     ) {
@@ -574,8 +578,10 @@ import kotlin.math.roundToInt
                         LyricLineText(
                             line = line,
                             isActive = isActive,
-                            // Interpolated, so the fill moves per frame rather than per report.
-                            positionMs = smoothDrawPosition + viewModel.lyricsOffset,
+                            // Interpolated, so the fill moves per frame rather than per report — and
+                            // read inside the fill's draw phase, so that per-frame motion redraws
+                            // the line instead of recomposing it.
+                            positionMs = { smoothDrawPosition.value + viewModel.lyricsOffset },
                             wordSync = viewModel.isWordSyncEnabled,
                             fillEffect = viewModel.isAppleMusicEffectEnabled,
                             activeStyle = lineFont.copy(fontWeight = FontWeight.ExtraBold),
@@ -686,7 +692,7 @@ import kotlin.math.roundToInt
             )
         }
 
-        val listState = key(viewModel.currentTrack?.id) { rememberLazyListState() }
+        val listState = key(viewModel.uiCurrentTrack?.id) { rememberLazyListState() }
         val scrollScope = androidx.compose.runtime.rememberCoroutineScope()
         // Wheel and drag always win: the reader is following the words, and having the view creep
         // out from under them would be worse than no auto-scroll at all. Any manual scroll parks
@@ -701,8 +707,8 @@ import kotlin.math.roundToInt
             enabled = viewModel.isPlainAutoScrollEnabled,
             speed = viewModel.effectivePlainAutoScrollSpeed,
             lineCount = lines.size,
-            positionMs = { viewModel.currentPosition },
-            isPlaying = { viewModel.isPlaying },
+            positionMs = { viewModel.uiCurrentPosition },
+            isPlaying = { viewModel.uiIsPlaying },
             playbackSpeed = { viewModel.effectsState.speed },
             lastManualScrollMs = { lastUserScrollMs },
         )

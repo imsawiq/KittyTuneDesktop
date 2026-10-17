@@ -14,6 +14,7 @@ import com.alananasss.kittytune.audio.automix.AutomixPlan
 import com.alananasss.kittytune.data.local.PlayerPreferences
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
@@ -143,12 +144,17 @@ class Player {
         const val DISCONTINUITY_REASON_SEEK_ADJUSTMENT = 2
 
         const val TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED = 0
+
+        /** How often the prebuffer TTL is checked. */
+        private const val PREBUFFER_TTL_CHECK_MS = 10_000L
+        /** Prebuffered engines older than this are released if not consumed by a crossfade. */
+        private const val PREBUFFER_TTL_MS = 60_000L
     }
 
     private val listeners = mutableListOf<Listener>()
     private val items = mutableListOf<MediaItem>()
     private var currentIndex = 0
-    private val scope = CoroutineScope(Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var resolveJob: Job? = null
 
     var onCompletion: (() -> Unit)? = null
@@ -158,7 +164,12 @@ class Player {
     private var fadingEngine: AudioEngine? = null
 
     @Volatile var isCrossfadingOut = false
-    private var lastEffectsState: AudioEffectsState? = null
+    var lastEffectsState: AudioEffectsState? = null
+        private set
+
+    fun reapplyEffects() {
+        lastEffectsState?.let { applyEffects(it) }
+    }
 
     data class PrebufferedTransition(
         val engine: AudioEngine,
@@ -167,22 +178,52 @@ class Player {
         val plan: AutomixPlan?,
         val url: String,
         val headers: Map<String, String>,
+        /** Wall-clock ms when the prebuffer was stored, for TTL eviction. */
+        val createdAtMs: Long = System.currentTimeMillis(),
     )
 
     @Volatile
     private var prebufferedTransition: PrebufferedTransition? = null
     private var prebufferJob: Job? = null
+    private var prebufferGeneration = 0L
+    private var prebufferInFlight = false
     private var crossfadeJob: Job? = null
     private val volumeLock = Any()
     private var incomingFadeGain = 1f
     private var outgoingFadeGain = 0f
 
+    /**
+     * Prebuffered engines that aren't consumed by a crossfade within this TTL are released to avoid
+     * holding ~1.5-2 MB of native DSP + FFmpeg state for a track the user never skipped to. The
+     * prebuffer is re-created on demand if the user does skip later, so the cost of early release
+     * is one re-resolve, not a lost feature (audit Phase 2 RAM gain).
+     */
+    private val prebufferTtlJob: Job = scope.launch {
+        while (isActive) {
+            delay(PREBUFFER_TTL_CHECK_MS)
+            val pb = prebufferedTransition ?: continue
+            if (System.currentTimeMillis() - pb.createdAtMs > PREBUFFER_TTL_MS) {
+                releasePrebuffered()
+            }
+        }
+    }
+
+    @Synchronized
     fun isPrebuffered(trackId: Long): Boolean {
         val pb = prebufferedTransition ?: return false
+        // TTL check: a prebuffer older than PREBUFFER_TTL_MS is stale (the user didn't skip to it)
+        // — release it and report not-prebuffered so the caller re-resolves if needed.
+        if (System.currentTimeMillis() - pb.createdAtMs > PREBUFFER_TTL_MS) {
+            releasePrebuffered()
+            return false
+        }
         return pb.trackId == trackId && pb.engine.state != AudioEngine.State.IDLE
     }
 
+    @Synchronized
     fun releasePrebuffered() {
+        prebufferGeneration++
+        prebufferInFlight = false
         prebufferJob?.cancel()
         prebufferJob = null
         val pb = prebufferedTransition ?: return
@@ -193,11 +234,12 @@ class Player {
         } catch (_: Exception) {}
     }
 
+    @Synchronized
     fun prebufferTransition(item: MediaItem, nextTrack: Track, automixPlan: AutomixPlan? = null) {
-        if (isCrossfadingOut) return
-        if (isPrebuffered(nextTrack.id)) return
-
+        if (isCrossfadingOut || isPrebuffered(nextTrack.id) || prebufferInFlight) return
         releasePrebuffered()
+        prebufferInFlight = true
+        val generation = prebufferGeneration
         prebufferJob = scope.launch {
             var engine: AudioEngine? = null
             var retained = false
@@ -228,17 +270,22 @@ class Player {
 
                 val startPos = automixPlan?.incomingStartMs ?: 0L
                 preparedEngine.setVolume(0f)
-                preparedEngine.setMediaItem(url, headers, startPos)
+                preparedEngine.setMediaItem(url, headers, startPos, nextTrack.id)
                 preparedEngine.prepare()
 
-                if (!isActive) return@launch
-                prebufferedTransition = PrebufferedTransition(preparedEngine, item, nextTrack.id, automixPlan, url, headers)
-                retained = true
+                synchronized(this@Player) {
+                    if (!isActive || generation != prebufferGeneration || isCrossfadingOut) return@launch
+                    prebufferedTransition = PrebufferedTransition(preparedEngine, item, nextTrack.id, automixPlan, url, headers)
+                    retained = true
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
                 com.alananasss.kittytune.utils.Logger.w("Player", "Prebuffer failed: ${error.message}")
             } finally {
+                synchronized(this@Player) {
+                    if (generation == prebufferGeneration) prebufferInFlight = false
+                }
                 if (!retained) engine?.release()
             }
         }
@@ -365,7 +412,7 @@ class Player {
     fun removeListener(l: Listener) { listeners.remove(l) }
 
     fun setMediaItemUrl(url: String, headers: Map<String, String>, startPositionMs: Long = 0L) {
-        activeEngine.setMediaItem(url, headers, startPositionMs)
+        activeEngine.setMediaItem(url, headers, startPositionMs, currentMediaItem?.track?.id)
     }
 
     fun setMediaItem(item: MediaItem, startPositionMs: Long = 0L) {
@@ -398,7 +445,7 @@ class Player {
             val headers = buildHeaders(item.track)
             val track = item.track
             if (track != null) {
-                val cached = com.alananasss.kittytune.data.TrackLoudnessRepository.getLoudness(track.id)
+                val cached = kotlinx.coroutines.runBlocking { com.alananasss.kittytune.data.TrackLoudnessRepository.getLoudness(track.id) }
                 if (cached != null) {
                     activeEngine.setTrackLoudness(cached.integratedLufs, cached.truePeakDb)
                 } else {
@@ -409,7 +456,7 @@ class Player {
             }
             activeEngine.setVolume(volumeAmplitude)
             activeEngine.setTrackGainDb(trackGainDb)
-            activeEngine.setMediaItem(url, headers, startPositionMs)
+            activeEngine.setMediaItem(url, headers, startPositionMs, track?.id)
         } else {
             activeEngine.stop()
         }
@@ -418,6 +465,7 @@ class Player {
         listeners.forEach { it.onMediaItemTransition(currentMediaItem, MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) }
     }
 
+    @Synchronized
     fun crossfadeToMediaItem(
         item: MediaItem,
         startPositionMs: Long,
@@ -443,6 +491,8 @@ class Player {
         val pre = if (isAdopted) prebufferedTransition else null
         if (!isAdopted) releasePrebuffered()
         else {
+            prebufferGeneration++
+            prebufferInFlight = false
             prebufferJob?.cancel()
             prebufferJob = null
         }
@@ -538,7 +588,7 @@ class Player {
                         newEngine.clearTrackLoudness()
                     }
 
-                    newEngine.setMediaItem(url, headers, startPositionMs)
+                    newEngine.setMediaItem(url, headers, startPositionMs, track?.id)
                     newEngine.prepare()
                 }
 
@@ -693,6 +743,7 @@ class Player {
         fadingEngine?.release()
         fadingEngine = null
         activeEngine.release()
+        scope.coroutineContext[Job]?.cancel()
     }
 
     fun seekTo(positionMs: Long) {
@@ -759,7 +810,7 @@ class Player {
             activeEngine.setVolume(volumeAmplitude)
             activeEngine.setTrackGainDb(trackGainDb)
             if (activeEngine.currentUrl != url) {
-                activeEngine.setMediaItem(url, headers, startPositionMs)
+                activeEngine.setMediaItem(url, headers, startPositionMs, currentMediaItem?.track?.id)
                 activeEngine.prepare()
                 if (playWhenReady) activeEngine.play()
             } else {
@@ -785,6 +836,11 @@ class Player {
         lastEffectsState = state
         activeEngine.applyEffects(state)
         fadingEngine?.applyEffects(state)
+    }
+
+    fun onKaraokeStemReady(trackId: Long) {
+        activeEngine.onKaraokeStemReady(trackId)
+        fadingEngine?.onKaraokeStemReady(trackId)
     }
 }
 

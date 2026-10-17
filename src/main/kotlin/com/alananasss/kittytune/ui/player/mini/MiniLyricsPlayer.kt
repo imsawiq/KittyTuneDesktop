@@ -36,10 +36,11 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Density
+import com.alananasss.kittytune.ui.theme.withUiScale
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -381,10 +382,7 @@ fun MiniLyricsPlayerWindow(
         val density = LocalDensity.current
         val uiScale by prefs.uiScaleFlow().collectAsState(initial = prefs.getUiScale())
         val customDensity = remember(density, uiScale) {
-            Density(
-                density = density.density * uiScale,
-                fontScale = density.fontScale * uiScale
-            )
+            density.withUiScale(uiScale)
         }
 
         // Exact physical pixel limits for window sizing and OS window manager hints
@@ -815,19 +813,25 @@ private fun MiniLyricsContent(
     transparentBg: Boolean = false,
     isDragging: Boolean = false,
 ) {
-    val track = viewModel.currentTrack
-    val isPlaying = viewModel.isPlaying
+    val track = viewModel.uiCurrentTrack
+    val isPlaying = viewModel.uiIsPlaying
     val lyrics = viewModel.lyricsLines
-    val rawPosition = viewModel.currentPosition
+    // positionMs is a lambda so this composable doesn't recompose on every position tick (4–5×/sec).
+    // The smooth position is read via State<Float> in the draw phase only (audit Phase 3 CPU gain).
     val smoothPosition = com.alananasss.kittytune.ui.player.lyrics.rememberSmoothPosition(
-        positionMs = rawPosition,
+        positionMs = { viewModel.uiCurrentPosition },
         isPlaying = isPlaying,
         speed = 1.0f,
     )
-    val adjustedPosition = smoothPosition + viewModel.lyricsOffset
 
-    val activeIndex = remember(adjustedPosition, lyrics) {
-        if (lyrics.isEmpty()) -1 else LyricsUtils.activeLineIndex(lyrics, adjustedPosition.toLong())
+    // Derived: the frame-clock position is recomputed every frame but observed only when the
+    // active line index actually changes. Computing the index from a per-frame value — as the
+    // `remember(adjustedPosition, lyrics)` this replaces did — recomposed the whole mini-player
+    // sixty times a second for the whole song.
+    val activeIndex by remember(lyrics, viewModel.lyricsOffset) {
+        derivedStateOf {
+            if (lyrics.isEmpty()) -1 else LyricsUtils.activeLineIndex(lyrics, (smoothPosition.value + viewModel.lyricsOffset).toLong())
+        }
     }
     val activeLine = lyrics.getOrNull(activeIndex)
 
@@ -899,7 +903,7 @@ private fun MiniLyricsContent(
                 if (track != null && activeLine != null && activeLine.text.isNotBlank()) {
                     MiniLyricDisplay(
                         line = activeLine,
-                        positionMs = adjustedPosition,
+                        positionMs = { smoothPosition.value + viewModel.lyricsOffset },
                         wordSync = viewModel.isWordSyncEnabled,
                         fillEffect = viewModel.isAppleMusicEffectEnabled,
                         maxChunkChars = maxChars,
@@ -959,9 +963,9 @@ private fun MiniLyricsContent(
                                     shapes = IconButtonDefaults.shapes()
                                 ) {
                                     Icon(
-                                        imageVector = if (viewModel.isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                        imageVector = if (viewModel.uiIsLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                                         contentDescription = "Like",
-                                        tint = if (viewModel.isLiked) MaterialTheme.colorScheme.primary
+                                        tint = if (viewModel.uiIsLiked) MaterialTheme.colorScheme.primary
                                                else MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(18.dp)
                                     )
@@ -1023,10 +1027,11 @@ private fun MiniLyricsContent(
         }
 
         // Progress bar along the bottom edge
-        if (showProgress && viewModel.duration > 0) {
-            val progress = viewModel.progressOf(adjustedPosition)
+        if (showProgress && viewModel.uiDuration > 0) {
             LinearProgressIndicator(
-                progress = { progress },
+                // Read inside the indicator's draw phase: the per-frame interpolated position
+                // redraws the hairline without recomposing the mini-player around it.
+                progress = { viewModel.progressOf(smoothPosition.value + viewModel.lyricsOffset) },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
@@ -1061,19 +1066,25 @@ private fun MiniLyricsElongatedContent(
     transparentBg: Boolean = false,
     isDragging: Boolean = false,
 ) {
-    val track = viewModel.currentTrack
-    val isPlaying = viewModel.isPlaying
+    val track = viewModel.uiCurrentTrack
+    val isPlaying = viewModel.uiIsPlaying
     val lyrics = viewModel.lyricsLines
-    val rawPosition = viewModel.currentPosition
+    // positionMs is a lambda so this composable doesn't recompose on every position tick (4–5×/sec).
+    // The smooth position is read via State<Float> in the draw phase only (audit Phase 3 CPU gain).
     val smoothPosition = com.alananasss.kittytune.ui.player.lyrics.rememberSmoothPosition(
-        positionMs = rawPosition,
+        positionMs = { viewModel.uiCurrentPosition },
         isPlaying = isPlaying,
         speed = 1.0f,
     )
-    val adjustedPosition = smoothPosition + viewModel.lyricsOffset
 
-    val activeIndex = remember(adjustedPosition, lyrics) {
-        if (lyrics.isEmpty()) -1 else LyricsUtils.activeLineIndex(lyrics, adjustedPosition.toLong())
+    // Derived: the frame-clock position is recomputed every frame but observed only when the
+    // active line index actually changes. Computing the index from a per-frame value — as the
+    // `remember(adjustedPosition, lyrics)` this replaces did — recomposed the whole mini-player
+    // sixty times a second for the whole song.
+    val activeIndex by remember(lyrics, viewModel.lyricsOffset) {
+        derivedStateOf {
+            if (lyrics.isEmpty()) -1 else LyricsUtils.activeLineIndex(lyrics, (smoothPosition.value + viewModel.lyricsOffset).toLong())
+        }
     }
     val activeLine = lyrics.getOrNull(activeIndex)
 
@@ -1144,7 +1155,7 @@ private fun MiniLyricsElongatedContent(
                 if (track != null && activeLine != null && activeLine.text.isNotBlank()) {
                     MiniLyricDisplay(
                         line = activeLine,
-                        positionMs = adjustedPosition,
+                        positionMs = { smoothPosition.value + viewModel.lyricsOffset },
                         wordSync = viewModel.isWordSyncEnabled,
                         fillEffect = viewModel.isAppleMusicEffectEnabled,
                         maxChunkChars = maxChars,
@@ -1199,9 +1210,9 @@ private fun MiniLyricsElongatedContent(
                                 shapes = IconButtonDefaults.shapes()
                             ) {
                                 Icon(
-                                    imageVector = if (viewModel.isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                    imageVector = if (viewModel.uiIsLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                                     contentDescription = "Like",
-                                    tint = if (viewModel.isLiked) MaterialTheme.colorScheme.primary
+                                    tint = if (viewModel.uiIsLiked) MaterialTheme.colorScheme.primary
                                            else MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(15.dp)
                                 )
@@ -1262,10 +1273,11 @@ private fun MiniLyricsElongatedContent(
         }
 
         // Hairline progress bar along the bottom edge
-        if (showProgress && viewModel.duration > 0) {
-            val progress = viewModel.progressOf(adjustedPosition)
+        if (showProgress && viewModel.uiDuration > 0) {
             LinearProgressIndicator(
-                progress = { progress },
+                // Read inside the indicator's draw phase: the per-frame interpolated position
+                // redraws the hairline without recomposing the mini-player around it.
+                progress = { viewModel.progressOf(smoothPosition.value + viewModel.lyricsOffset) },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
@@ -1293,7 +1305,7 @@ private fun MiniLyricsElongatedContent(
 @Composable
 private fun MiniLyricDisplay(
     line: LyricLine,
-    positionMs: Float,
+    positionMs: () -> Float,
     wordSync: Boolean,
     fillEffect: Boolean,
     maxChunkChars: Int = 36,
@@ -1310,9 +1322,10 @@ private fun MiniLyricDisplay(
         splitIntoChunks(fullText, words, maxChunkChars = maxChunkChars)
     }
 
-    // Determine which chunk is active based on current playback progress
-    val activeChunkIndex = remember(chunks, positionMs) {
-        resolveActiveChunk(chunks, positionMs)
+    // Determine which chunk is active based on current playback progress. Derived, so the chunk
+    // switch is what recomposes this display, not the per-frame position underneath it.
+    val activeChunkIndex by remember(chunks, positionMs) {
+        derivedStateOf { resolveActiveChunk(chunks, positionMs()) }
     }
     val currentChunk = chunks.getOrElse(activeChunkIndex) { chunks.first() }
 
@@ -1360,11 +1373,16 @@ private fun MiniLyricDisplay(
             val style = baseStyle.copy(fontWeight = if (compact) FontWeight.Bold else FontWeight.ExtraBold)
 
             if (!fillEffect) {
-                val coloured = buildAnnotatedString {
-                    for (word in chunkWords) {
-                        val reached = positionMs >= word.startTime
-                        withStyle(SpanStyle(color = if (reached) activeColor else unsungColor)) {
-                            append(word.text)
+                // Derived: the string only changes when a word flips from unsung to sung, not per frame.
+                val coloured by remember(chunkWords, activeColor, unsungColor, positionMs) {
+                    derivedStateOf {
+                        buildAnnotatedString {
+                            for (word in chunkWords) {
+                                val reached = positionMs() >= word.startTime
+                                withStyle(SpanStyle(color = if (reached) activeColor else unsungColor)) {
+                                    append(word.text)
+                                }
+                            }
                         }
                     }
                 }
@@ -1376,11 +1394,6 @@ private fun MiniLyricDisplay(
                 )
             } else {
                 var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
-                val position = if (line.endTime > line.startTime) {
-                    positionMs.coerceAtMost(line.endTime.toFloat())
-                } else {
-                    positionMs
-                }
 
                 Box {
                     Text(
@@ -1397,6 +1410,14 @@ private fun MiniLyricDisplay(
                         maxLines = 1,
                         modifier = Modifier.drawWithContent {
                             val res = layout ?: return@drawWithContent
+                            // Read in the draw phase: the per-frame position invalidates the draw
+                            // only, clamped to the line's end so the fill completes, never overruns.
+                            val rawPosition = positionMs()
+                            val position = if (line.endTime > line.startTime) {
+                                rawPosition.coerceAtMost(line.endTime.toFloat())
+                            } else {
+                                rawPosition
+                            }
                             clipPath(sungPath(res, chunkWords, ranges, chunkText.length, position)) {
                                 this@drawWithContent.drawContent()
                             }

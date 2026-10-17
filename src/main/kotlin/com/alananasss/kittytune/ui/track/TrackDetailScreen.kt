@@ -36,6 +36,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
 import com.alananasss.kittytune.core.AppInstance
 import com.alananasss.kittytune.core.str
+import com.alananasss.kittytune.ui.common.rememberFilteredArtists
+import com.alananasss.kittytune.ui.common.rememberFilteredTracks
 import com.alananasss.kittytune.ui.common.ArtistLinkText
 import com.alananasss.kittytune.data.DownloadManager
 import com.alananasss.kittytune.domain.Playlist
@@ -131,6 +133,7 @@ fun TrackDetailScreen(
                                 isLoadingMore = detailViewModel.isLikersLoadingMore,
                                 isSortedByFollowers = detailViewModel.isUsersSortedByFollowers,
                                 onToggleSort = { detailViewModel.toggleUsersSort() },
+                                isSortLoading = detailViewModel.isUsersSortLoading,
                             )
                             1 -> UserList(
                                 users = detailViewModel.reposters,
@@ -139,6 +142,7 @@ fun TrackDetailScreen(
                                 isLoadingMore = detailViewModel.isRepostersLoadingMore,
                                 isSortedByFollowers = detailViewModel.isUsersSortedByFollowers,
                                 onToggleSort = { detailViewModel.toggleUsersSort() },
+                                isSortLoading = detailViewModel.isUsersSortLoading,
                             )
                             2 -> PlaylistList(
                                 playlists = detailViewModel.inPlaylists,
@@ -146,7 +150,8 @@ fun TrackDetailScreen(
                                 onLoadMore = { detailViewModel.loadMorePlaylists() },
                                 isLoadingMore = detailViewModel.isPlaylistsLoadingMore,
                                 isSortedByLikes = detailViewModel.isPlaylistsSortedByLikes,
-                                onToggleSort = { detailViewModel.toggleSortPlaylists() }
+                                onToggleSort = { detailViewModel.toggleSortPlaylists() },
+                                isSortLoading = detailViewModel.isPlaylistsSortLoading,
                             )
                             3 -> TrackList(
                                 tracks = detailViewModel.relatedTracks,
@@ -172,13 +177,18 @@ fun UserList(
     /** Whether the list is by followers; null where it is not offered a choice of order. */
     isSortedByFollowers: Boolean? = null,
     onToggleSort: () -> Unit = {},
+    isSortLoading: Boolean = false,
 ) {
-    if (users.isEmpty() && !isLoadingMore) {
+    val visibleUsers = rememberFilteredArtists(users)
+    if (visibleUsers.isEmpty() && !isLoadingMore) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(str("detail_no_one_yet"), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     } else Column(Modifier.fillMaxSize()) {
-        if (isSortedByFollowers != null) Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        if (isSortedByFollowers != null) Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             FilterChip(
                 selected = isSortedByFollowers,
                 onClick = onToggleSort,
@@ -192,11 +202,18 @@ fun UserList(
                 },
                 shape = CircleShape,
             )
+            if (isSortLoading) {
+                Spacer(Modifier.width(8.dp))
+                CircularWavyProgressIndicator(modifier = Modifier.size(18.dp), color = MaterialTheme.colorScheme.primary)
+            }
         }
         LazyColumn(contentPadding = PaddingValues(bottom = 24.dp), modifier = Modifier.weight(1f)) {
-            itemsIndexed(users) { index, user ->
-                if (index >= users.size - 5) {
-                    LaunchedEffect(Unit) { onLoadMore() }
+            itemsIndexed(visibleUsers, key = { _, user -> user.id }) { index, user ->
+                if (index >= visibleUsers.size - 5) {
+                    // Keyed on size + loading: a trigger suppressed while a page is already
+                    // loading retries when it finishes instead of stalling (a one-shot
+                    // LaunchedEffect(Unit) never refires once consumed during loading).
+                    LaunchedEffect(visibleUsers.size, isLoadingMore) { onLoadMore() }
                 }
 
                 Row(
@@ -245,11 +262,15 @@ fun PlaylistList(
     onLoadMore: () -> Unit,
     isLoadingMore: Boolean,
     isSortedByLikes: Boolean,
-    onToggleSort: () -> Unit
+    onToggleSort: () -> Unit,
+    isSortLoading: Boolean = false,
 ) {
     val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Column(modifier = Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             FilterChip(
                 selected = isSortedByLikes,
                 onClick = onToggleSort,
@@ -264,9 +285,13 @@ fun PlaylistList(
                 shape = CircleShape,
                 interactionSource = interactionSource,
             )
+            if (isSortLoading) {
+                Spacer(Modifier.width(8.dp))
+                CircularWavyProgressIndicator(modifier = Modifier.size(18.dp), color = MaterialTheme.colorScheme.primary)
+            }
         }
 
-        if (playlists.isEmpty() && !isLoadingMore) {
+        if (playlists.isEmpty() && !isLoadingMore && !isSortLoading) {
             Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
                 Text(str("detail_no_public_playlist"), color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -275,9 +300,10 @@ fun PlaylistList(
                 contentPadding = PaddingValues(bottom = 24.dp),
                 modifier = Modifier.weight(1f)
             ) {
-                itemsIndexed(playlists) { index, playlist ->
+                itemsIndexed(playlists, key = { _, playlist -> playlist.id }) { index, playlist ->
                     if (index >= playlists.size - 5) {
-                        LaunchedEffect(Unit) { onLoadMore() }
+                        // Same retry semantics as UserList: never wedge the scroll.
+                        LaunchedEffect(playlists.size, isLoadingMore) { onLoadMore() }
                     }
 
                     Row(
@@ -331,7 +357,8 @@ fun TrackList(
     val downloadProgress by DownloadManager.downloadProgress.collectAsState()
     val downloadedIds by DownloadManager.downloadedIds.collectAsState()
 
-    if (tracks.isEmpty() && !isLoadingMore) {
+    val visibleTracks = rememberFilteredTracks(tracks)
+    if (visibleTracks.isEmpty() && !isLoadingMore) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(str("detail_no_similar"), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -339,7 +366,7 @@ fun TrackList(
         LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
             item {
                 Button(
-                    onClick = { playerViewModel.playPlaylist(tracks, 0) },
+                    onClick = { playerViewModel.playPlaylist(visibleTracks, 0) },
                     shapes = ButtonDefaults.shapes(),
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 ) {
@@ -348,9 +375,9 @@ fun TrackList(
                     Text(str("artist_listen"))
                 }
             }
-            itemsIndexed(tracks) { index, track ->
-                if (index >= tracks.size - 5) {
-                    LaunchedEffect(Unit) { onLoadMore() }
+            itemsIndexed(visibleTracks) { index, track ->
+                if (index >= visibleTracks.size - 5) {
+                    LaunchedEffect(visibleTracks.size, isLoadingMore) { onLoadMore() }
                 }
 
                 val progress = downloadProgress[track.id]
@@ -361,12 +388,12 @@ fun TrackList(
 
                 TrackListItem(
                     track = track,
-                    currentlyPlayingTrack = playerViewModel.currentTrack,
+                    currentlyPlayingTrack = playerViewModel.uiCurrentTrack,
                     index = index,
                     isDownloading = isDownloading,
                     isDownloaded = isDownloaded,
                     downloadProgress = progress ?: 0,
-                    onClick = { playerViewModel.playPlaylist(tracks, index) },
+                    onClick = { playerViewModel.playPlaylist(visibleTracks, index) },
                     onOptionClick = { playerViewModel.showTrackOptions(track) },
                     onArtistClick = { playerViewModel.navigateToTrackArtist(it) }
                 )

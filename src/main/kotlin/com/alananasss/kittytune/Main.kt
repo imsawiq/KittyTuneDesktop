@@ -15,7 +15,7 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.Density
+import com.alananasss.kittytune.ui.theme.withUiScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.runtime.CompositionLocalProvider
@@ -93,6 +93,7 @@ private const val DROP_HIDDEN_WINDOW_AFTER_MS = 20_000L
 
 @OptIn(androidx.compose.ui.InternalComposeUiApi::class)
 fun main(args: Array<String>) {
+    com.alananasss.kittytune.core.LinuxAppIdHelper.apply()
     System.setProperty("sun.java2d.wm.className", "kitty-tune")
     // Before anything heavy loads: a second launch only has to wake the first one up.
     // Arguments are files the OS asked us to open ("Open with", a double-click on an associated file).
@@ -508,6 +509,16 @@ fun main(args: Array<String>) {
         ) {
             setSingletonImageLoaderFactory { ImageLoaderFactory.create() }
 
+            androidx.compose.runtime.DisposableEffect(window) {
+                val listener = object : java.awt.event.WindowAdapter() {
+                    override fun windowGainedFocus(event: java.awt.event.WindowEvent?) {
+                        playerViewModel.refreshSyncedPlaybackOnForeground()
+                    }
+                }
+                window.addWindowFocusListener(listener)
+                onDispose { window.removeWindowFocusListener(listener) }
+            }
+
             // Set dark background immediately on the AWT window before composition to prevent white flash on Win32/DirectX resize
             runCatching {
                 val darkBg = java.awt.Color(0x13, 0x13, 0x13)
@@ -613,10 +624,7 @@ fun main(args: Array<String>) {
             val prefs = remember { PlayerPreferences() }
             val uiScale by prefs.uiScaleFlow().collectAsState(initial = prefs.getUiScale())
             val currentDensity = LocalDensity.current
-            val customDensity = Density(
-                density = currentDensity.density * uiScale,
-                fontScale = currentDensity.fontScale * uiScale
-            )
+            val customDensity = currentDensity.withUiScale(uiScale)
 
             val windowSeen = com.alananasss.kittytune.core.rememberWindowSeen(window)
             com.alananasss.kittytune.core.TrimMemoryWhileHidden(window)

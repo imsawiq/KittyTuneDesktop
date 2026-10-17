@@ -59,7 +59,9 @@ class HlsStreamAdapter(
     }
 
     companion object {
-        private val client = okhttp3.OkHttpClient.Builder()
+        // Derived from ProxyManager's shared client: same connection pool and dispatcher as every
+        // other caller, with this module's own short timeouts (RAM, issue #33).
+        private val client = com.alananasss.kittytune.data.network.ProxyManager.getOkHttpClient().newBuilder()
             .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
@@ -278,6 +280,13 @@ class HlsStreamAdapter(
                     if (read == -1) {
                         currentStream?.close()
                         currentStream = null
+                        // Once we've moved past segment 0, the prefetched opening segment data is
+                        // dead weight (0.5-2 MB). Null it so GC can collect it. A re-open from
+                        // position 0 will re-fetch — one HTTP request, not a user-visible delay
+                        // (audit Phase 2 RAM gain).
+                        if (currentSegmentIndex > 0) {
+                            openingSegmentData = null
+                        }
                     } else {
                         return read
                     }

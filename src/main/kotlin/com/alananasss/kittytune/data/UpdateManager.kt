@@ -211,6 +211,12 @@ object UpdateManager {
             } else {
                 _status.value = if (isManual) UpdateStatus.NO_UPDATE else UpdateStatus.IDLE
             }
+            // Committed after the release list actually came back: written before the request as
+            // it was, a network failure still consumed the 15-minute window, and start-ups behind
+            // a flaky proxy could skip update checks indefinitely.
+            if (!isManual) {
+                try { prefs.putLong(KEY_LAST_CHECK, System.currentTimeMillis()) } catch (_: Exception) {}
+            }
         } catch (e: Exception) {
             e.printStackTrace()
             _status.value = if (isManual) UpdateStatus.ERROR else UpdateStatus.IDLE

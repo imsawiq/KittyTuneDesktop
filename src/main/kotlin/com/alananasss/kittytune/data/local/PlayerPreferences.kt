@@ -11,9 +11,6 @@ import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.AtomicMoveNotSupportedException
-import java.nio.file.StandardCopyOption
 import com.alananasss.kittytune.data.lyrics.providers.PreferredLyricsProvider
 import com.alananasss.kittytune.data.lyrics.providers.DefaultLyricsProviderOrder
 import com.alananasss.kittytune.data.lyrics.providers.deserializeLyricsProviderOrder
@@ -102,6 +99,104 @@ enum class AppLanguage(val code: String) {
     VIETNAMESE("vi")
 }
 
+/**
+ * Audio duration analyzed before classifying AI music (issue #41, ported from Android).
+ *
+ * - [ACCURATE] (4s): full native 4.0s ArtifactNet segment without tiling.
+ * - [FAST] (1s): ~1.0s segment tiled with loop crossfading for immediate skips.
+ */
+enum class AiDetectionWindow(
+    val id: String,
+    val seconds: Int,
+    val titleKey: String,
+    val descKey: String,
+) {
+    ACCURATE(
+        id = "4s",
+        seconds = 4,
+        titleKey = "block_ai_window_4s_title",
+        descKey = "block_ai_window_4s_desc",
+    ),
+    FAST(
+        id = "1s",
+        seconds = 1,
+        titleKey = "block_ai_window_1s_title",
+        descKey = "block_ai_window_1s_desc",
+    );
+
+    companion object {
+        fun fromId(id: String?): AiDetectionWindow =
+            entries.firstOrNull { it.id == id } ?: ACCURATE
+    }
+}
+
+/**
+ * AI music detection model architecture choices.
+ *
+ * - ARTIFACTNET: Ultra-fast forensic artifact CNN via LiteRT/TFLite + XNNPACK (CPU).
+ * - AUDIO_TRANSFORMER: Contextual audio transformer (AST/CLAP) via ONNX Runtime with DirectML/Vulkan/GPU acceleration.
+ */
+enum class AiModelType(
+    val id: String,
+    val titleKey: String,
+    val descKey: String,
+    val noteKey: String,
+    val modelFileName: String,
+    val totalBytes: Long,
+    val runtimeTag: String,
+    val downloadUrl: String,
+    val fallbackUrls: List<String> = emptyList(),
+    val manualDownloadUrl: String = "https://huggingface.co/intrect/artifactnet",
+) {
+    ARTIFACTNET(
+        id = "artifactnet",
+        titleKey = "block_model_artifactnet_title",
+        descKey = "block_model_artifactnet_desc",
+        noteKey = "block_model_artifactnet_note",
+        modelFileName = "artifactnet_v94_full.onnx",
+        totalBytes = 16_986_745L,
+        runtimeTag = "DirectML · Vulkan / XNNPACK",
+        downloadUrl = "https://github.com/alan7383/kittytune/releases/download/v2.68.0/artifactnet_v94_full.onnx",
+        fallbackUrls = listOf(
+            "https://github.com/alan7383/KittyTuneDesktop/releases/download/v1.4.1/artifactnet_v94_full.onnx",
+            "https://github.com/alan7383/kittytune/releases/download/v2.68.0/artifactnet_v94_full.tflite",
+            "https://github.com/alan7383/KittyTuneDesktop/releases/download/v1.4.1/artifactnet_v94_full.tflite",
+        ),
+        manualDownloadUrl = "https://huggingface.co/intrect/artifactnet",
+    );
+
+    companion object {
+        fun fromId(id: String?): AiModelType = ARTIFACTNET
+    }
+}
+
+/**
+ * Karaoke / Vocal suppression engine choices.
+ * - DSP: Ultra-low latency mid/side phase cancellation filter (instant, 0 MB).
+ * - MEL_BAND_ROFORMER: Studio-grade AI neural source separation via ONNX Runtime with DirectML/Vulkan GPU acceleration.
+ */
+enum class KaraokeEngineMode(
+    val id: String,
+    val titleKey: String,
+    val descKey: String,
+) {
+    DSP(
+        id = "dsp",
+        titleKey = "karaoke_engine_dsp_title",
+        descKey = "karaoke_engine_dsp_desc",
+    ),
+    MEL_BAND_ROFORMER(
+        id = "roformer",
+        titleKey = "karaoke_engine_roformer_title",
+        descKey = "karaoke_engine_roformer_desc",
+    );
+
+    companion object {
+        fun fromId(id: String?): KaraokeEngineMode =
+            entries.firstOrNull { it.id == id } ?: DSP
+    }
+}
+
 val DEFAULT_PINNED_AUDIO_FX = listOf(
     "bass_boost",
     "earrape",
@@ -114,6 +209,12 @@ val DEFAULT_PINNED_AUDIO_FX = listOf(
 class PlayerPreferences {
     private val gson = Gson()
     private val queueFile = File(AppDirs.dataDir, "queue_cache.json")
+    /**
+     * Dedicated store for the playback position. The position is saved every 5 seconds during
+     * playback; writing it to [Prefs] triggered a full re-encode of prefs.json on every tick.
+     * This file holds only KEY_POSITION, so the rewrite is a few bytes (audit Phase 5 IO gain).
+     */
+    private val positionPrefs = com.alananasss.kittytune.core.NamedPrefs("playback_position")
 
     companion object {
         val DEFAULT_PINNED_AUDIO_FX = listOf(
@@ -125,6 +226,10 @@ class PlayerPreferences {
             "rain"
         )
         const val KEY_LISTENING_STATS_ENABLED = "listening_stats_enabled"
+        const val KEY_KARAOKE_ENGINE_MODE = "karaoke_engine_mode"
+        const val KEY_KARAOKE_GPU_ACCELERATION = "karaoke_gpu_acceleration_enabled"
+        const val KEY_KARAOKE_SELECTED_GPU = "karaoke_selected_gpu_id"
+        const val KEY_KARAOKE_AUTO_SEPARATE = "karaoke_auto_separate_enabled"
         private const val KEY_PINNED_AUDIO_FX = "pinned_audio_fx_list_v1"
         private const val KEY_SOUNDCLOUD_HISTORY_SYNC = "soundcloud_history_sync_enabled"
         private const val KEY_TRACK_JSON = "last_track_json"
@@ -196,6 +301,7 @@ class PlayerPreferences {
         private const val KEY_LOCAL_MEDIA_ENABLED = "local_media_enabled"
         private const val KEY_LOCAL_MEDIA_URIS_SET = "local_media_uris_set_v2"
         private const val KEY_PLAYER_BAR_BUTTONS = "player_bar_buttons"
+        private const val KEY_PLAYER_BAR_DEVICES_MIGRATED = "player_bar_devices_migrated"
         private const val KEY_PLAYER_BAR_STYLE = "player_bar_style"
         private const val KEY_TRACK_SOURCE_BADGE_STYLE = "track_source_badge_style"
         const val KEY_FULL_PLAYER_SOURCE_INDICATOR_ENABLED = "full_player_source_indicator_enabled"
@@ -204,6 +310,7 @@ class PlayerPreferences {
         const val PLAYER_BAR_BUTTON_LIKE = "like"
         const val PLAYER_BAR_BUTTON_PANEL = "panel"
         const val PLAYER_BAR_BUTTON_QUEUE = "queue"
+        const val PLAYER_BAR_BUTTON_DEVICES = "devices"
         const val PLAYER_BAR_BUTTON_LYRICS = "lyrics"
         const val PLAYER_BAR_BUTTON_MINIPLAYER = "miniplayer"
         const val PLAYER_BAR_BUTTON_SHUFFLE = "shuffle"
@@ -214,6 +321,7 @@ class PlayerPreferences {
                 PLAYER_BAR_BUTTON_LIKE,
                 PLAYER_BAR_BUTTON_PANEL,
                 PLAYER_BAR_BUTTON_QUEUE,
+                PLAYER_BAR_BUTTON_DEVICES,
                 PLAYER_BAR_BUTTON_LYRICS,
                 PLAYER_BAR_BUTTON_MINIPLAYER,
                 PLAYER_BAR_BUTTON_SHUFFLE,
@@ -239,6 +347,7 @@ class PlayerPreferences {
         const val PANEL_TAB_QUEUE = "queue"
         const val PANEL_TAB_LYRICS = "lyrics"
         const val PANEL_TAB_EFFECTS = "effects"
+        const val PANEL_TAB_DEVICES = "devices"
 
         private const val KEY_PANEL_TRACK_STATS_HIDDEN = "now_playing_track_stats_hidden"
 
@@ -435,6 +544,19 @@ class PlayerPreferences {
         const val KEY_DEEZER_COOKIE = "deezer_cookie"
         const val KEY_DEEZER_USE_ACCOUNT = "deezer_use_account"
 
+        // AI music detection (issue #41, ported from Android — same key names so
+        // a backup imported from Android keeps these settings).
+        private const val KEY_AI_AUTO_SKIP = "ai_auto_skip_enabled"
+        private const val KEY_AI_AUTO_BLOCK = "ai_auto_block_enabled"
+        private const val KEY_AI_SPARE_FAVORITES = "ai_spare_favorites"
+        private const val KEY_AI_SCORE_THRESHOLD = "ai_score_threshold"
+        private const val KEY_AI_DETECTION_WINDOW = "ai_detection_window"
+        const val KEY_AI_SHOW_BADGE = "ai_show_badge"
+        const val KEY_AI_SHOW_HUMAN_BADGE = "ai_show_human_badge"
+        private const val KEY_AI_SELECTED_MODEL = "ai_selected_model"
+        private const val KEY_AI_GPU_ACCELERATION = "ai_gpu_acceleration_enabled"
+        private const val KEY_AI_SELECTED_GPU = "ai_selected_gpu_device"
+
         private val queueLock = Any()
     }
 
@@ -446,6 +568,82 @@ class PlayerPreferences {
     /** Whether listens are shared with paired devices. Off keeps them on this device only. */
     fun getSyncListensEnabled(): Boolean = Prefs.getBoolean("sync_listens_enabled", true)
     fun setSyncListensEnabled(enabled: Boolean) = Prefs.putBoolean("sync_listens_enabled", enabled)
+
+    // ─── AI music detection (issue #41, ported from Android) ─────────────────
+
+    /** Auto-skip tracks detected as AI-generated (P(AI) ≥ threshold). Default: off. */
+    var aiAutoSkip: Boolean
+        get() = Prefs.getBoolean(KEY_AI_AUTO_SKIP, false)
+        set(value) = Prefs.putBoolean(KEY_AI_AUTO_SKIP, value)
+
+    /**
+     * When [aiAutoSkip] is true, also add the track to the block list so it
+     * never reappears in queues or recommendations. Default: false.
+     */
+    var aiAutoBlock: Boolean
+        get() = Prefs.getBoolean(KEY_AI_AUTO_BLOCK, false)
+        set(value) = Prefs.putBoolean(KEY_AI_AUTO_BLOCK, value)
+
+    /** Never auto-skip tracks that the user has liked / saved to favorites. Default: true. */
+    var aiSpareFavorites: Boolean
+        get() = Prefs.getBoolean(KEY_AI_SPARE_FAVORITES, true)
+        set(value) = Prefs.putBoolean(KEY_AI_SPARE_FAVORITES, value)
+
+    /** P(AI) threshold above which a track is considered AI-generated. Range [0.5, 0.95]. Default: 0.85 (85% Strict). */
+    var aiScoreThreshold: Float
+        get() = Prefs.getFloat(KEY_AI_SCORE_THRESHOLD, 0.85f).coerceIn(0.5f, 0.95f)
+        set(value) = Prefs.putFloat(KEY_AI_SCORE_THRESHOLD, value.coerceIn(0.5f, 0.95f))
+
+    /** Show AI detection badge in the player during playback. Default: false. */
+    var aiShowBadge: Boolean
+        get() = Prefs.getBoolean(KEY_AI_SHOW_BADGE, false)
+        set(value) = Prefs.putBoolean(KEY_AI_SHOW_BADGE, value)
+
+    /** Also show the badge when a track is classified as human music. Default: true. */
+    var aiShowHumanBadge: Boolean
+        get() = Prefs.getBoolean(KEY_AI_SHOW_HUMAN_BADGE, true)
+        set(value) = Prefs.putBoolean(KEY_AI_SHOW_HUMAN_BADGE, value)
+
+    /** Audio duration analyzed before classifying AI music (1s or 4s). Default: ACCURATE (4s). */
+    var aiDetectionWindow: AiDetectionWindow
+        get() = AiDetectionWindow.fromId(Prefs.getString(KEY_AI_DETECTION_WINDOW, AiDetectionWindow.ACCURATE.id))
+        set(value) = Prefs.putString(KEY_AI_DETECTION_WINDOW, value.id)
+
+    /** Selected AI music detection model architecture. Default: ARTIFACTNET. */
+    var aiSelectedModel: AiModelType
+        get() = AiModelType.fromId(Prefs.getString(KEY_AI_SELECTED_MODEL, AiModelType.ARTIFACTNET.id))
+        set(value) = Prefs.putString(KEY_AI_SELECTED_MODEL, value.id)
+
+    /** Hardware GPU acceleration toggle for ONNX Runtime (DirectML / Vulkan / GPU). Default: true. */
+    var aiGpuAccelerationEnabled: Boolean
+        get() = Prefs.getBoolean(KEY_AI_GPU_ACCELERATION, true)
+        set(value) = Prefs.putBoolean(KEY_AI_GPU_ACCELERATION, value)
+
+    /** Selected GPU device ID (e.g. "auto", "cpu", or "gpu:0"). Default: "auto". */
+    var aiSelectedGpuId: String
+        get() = Prefs.getString(KEY_AI_SELECTED_GPU, com.alananasss.kittytune.audio.ai.GpuDevice.ID_AUTO) ?: com.alananasss.kittytune.audio.ai.GpuDevice.ID_AUTO
+        set(value) = Prefs.putString(KEY_AI_SELECTED_GPU, value)
+
+    /** Karaoke / Vocal separation engine mode. Default: DSP. */
+    var karaokeEngineMode: KaraokeEngineMode
+        get() = KaraokeEngineMode.fromId(Prefs.getString(KEY_KARAOKE_ENGINE_MODE, KaraokeEngineMode.DSP.id))
+        set(value) = Prefs.putString(KEY_KARAOKE_ENGINE_MODE, value.id)
+
+    /** GPU hardware acceleration for Karaoke AI (DirectML / Vulkan). Default: true. */
+    var karaokeGpuAccelerationEnabled: Boolean
+        get() = Prefs.getBoolean(KEY_KARAOKE_GPU_ACCELERATION, true)
+        set(value) = Prefs.putBoolean(KEY_KARAOKE_GPU_ACCELERATION, value)
+
+    /** Selected GPU device ID for Karaoke AI. Default: "auto". */
+    var karaokeSelectedGpuId: String
+        get() = Prefs.getString(KEY_KARAOKE_SELECTED_GPU, com.alananasss.kittytune.audio.ai.GpuDevice.ID_AUTO) ?: com.alananasss.kittytune.audio.ai.GpuDevice.ID_AUTO
+        set(value) = Prefs.putString(KEY_KARAOKE_SELECTED_GPU, value)
+
+    /** Auto-separate playing tracks in background when Karaoke is toggled on. Default: false. */
+    var karaokeAutoSeparateOnPlay: Boolean
+        get() = Prefs.getBoolean(KEY_KARAOKE_AUTO_SEPARATE, false)
+        set(value) = Prefs.putBoolean(KEY_KARAOKE_AUTO_SEPARATE, value)
+
     fun setSyncLikesEnabled(enabled: Boolean) = Prefs.putBoolean(KEY_SYNC_LIKES, enabled)
 
     fun getHasCompletedSetup(): Boolean = Prefs.getBoolean(KEY_HAS_COMPLETED_SETUP, false)
@@ -536,7 +734,7 @@ class PlayerPreferences {
     fun getWaveMode(): String = Prefs.getString(KEY_WAVE_MODE, "BALANCED") ?: "BALANCED"
     fun setWaveMode(mode: String) = Prefs.putString(KEY_WAVE_MODE, mode)
 
-    fun getOneLineLyricsEnabled(): Boolean = Prefs.getBoolean(KEY_ONE_LINE_LYRICS, true)
+    fun getOneLineLyricsEnabled(): Boolean = Prefs.getBoolean(KEY_ONE_LINE_LYRICS, false)
     fun setOneLineLyricsEnabled(enabled: Boolean) = Prefs.putBoolean(KEY_ONE_LINE_LYRICS, enabled)
 
     fun getShowLyricsButtonEnabled(): Boolean = Prefs.getBoolean(KEY_SHOW_LYRICS_BUTTON, true)
@@ -896,7 +1094,7 @@ class PlayerPreferences {
     fun getFullPlayerCoverScale(): Float = Prefs.getFloat(KEY_FULL_PLAYER_COVER_SCALE, 1.0f).coerceIn(0.6f, 1.4f)
     fun setFullPlayerCoverScale(scale: Float) = Prefs.putFloat(KEY_FULL_PLAYER_COVER_SCALE, scale.coerceIn(0.6f, 1.4f))
 
-    fun getFullPlayerCoverFeather(): Boolean = Prefs.getBoolean(KEY_FULL_PLAYER_COVER_FEATHER, true)
+    fun getFullPlayerCoverFeather(): Boolean = Prefs.getBoolean(KEY_FULL_PLAYER_COVER_FEATHER, false)
     fun setFullPlayerCoverFeather(enabled: Boolean) = Prefs.putBoolean(KEY_FULL_PLAYER_COVER_FEATHER, enabled)
 
     /** 0..1, how far the soft edge reaches into the cover. */
@@ -1151,25 +1349,31 @@ class PlayerPreferences {
      */
     fun getPlayerBarButtons(): Set<String> {
         val raw = Prefs.getString(KEY_PLAYER_BAR_BUTTONS, null) ?: return PLAYER_BAR_BUTTONS_DEFAULT
-        val saved = raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        var saved = raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
         val hasNewKeys = saved.any {
             it == PLAYER_BAR_BUTTON_LYRICS || it == PLAYER_BAR_BUTTON_MINIPLAYER ||
                 it == PLAYER_BAR_BUTTON_SHUFFLE || it == PLAYER_BAR_BUTTON_REPEAT
         }
-        return if (!hasNewKeys) {
-            saved + setOf(
+        if (!hasNewKeys) {
+            saved = saved + setOf(
                 PLAYER_BAR_BUTTON_LYRICS,
                 PLAYER_BAR_BUTTON_MINIPLAYER,
                 PLAYER_BAR_BUTTON_SHUFFLE,
                 PLAYER_BAR_BUTTON_REPEAT,
             )
-        } else {
-            saved
         }
+        if (!Prefs.getBoolean(KEY_PLAYER_BAR_DEVICES_MIGRATED, false)) {
+            saved = saved + PLAYER_BAR_BUTTON_DEVICES
+            Prefs.putBoolean(KEY_PLAYER_BAR_DEVICES_MIGRATED, true)
+            Prefs.putString(KEY_PLAYER_BAR_BUTTONS, saved.joinToString(","))
+        }
+        return saved
     }
 
-    fun setPlayerBarButtons(buttons: Set<String>) =
+    fun setPlayerBarButtons(buttons: Set<String>) {
+        Prefs.putBoolean(KEY_PLAYER_BAR_DEVICES_MIGRATED, true)
         Prefs.putString(KEY_PLAYER_BAR_BUTTONS, buttons.joinToString(","))
+    }
 
     fun getPlayerBarStyle(): PlayerBarStyle {
         val raw = Prefs.getString(KEY_PLAYER_BAR_STYLE, PlayerBarStyle.DEFAULT.name)
@@ -1518,7 +1722,7 @@ class PlayerPreferences {
             Prefs.putString(KEY_REPEAT_MODE, repeatMode.name)
             Prefs.remove(KEY_TRACK_JSON)
             if (queueFile.exists()) queueFile.delete()
-            Prefs.remove(KEY_POSITION)
+            positionPrefs.remove(KEY_POSITION)
             Prefs.remove(KEY_QUEUE_INDEX)
             Prefs.remove(KEY_CONTEXT_JSON)
             return
@@ -1529,11 +1733,7 @@ class PlayerPreferences {
                 try {
                     val tempFile = File(queueFile.parentFile, "queue_cache.tmp")
                     tempFile.writeText(gson.toJson(PlaybackQueueSnapshot.capture(queue, originalQueue)))
-                    try {
-                        Files.move(tempFile.toPath(), queueFile.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-                    } catch (_: AtomicMoveNotSupportedException) {
-                        Files.move(tempFile.toPath(), queueFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                    }
+                    com.alananasss.kittytune.core.AtomicFiles.replace(tempFile, queueFile)
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
@@ -1543,14 +1743,19 @@ class PlayerPreferences {
         track?.let { Prefs.putString(KEY_TRACK_JSON, gson.toJson(it)) }
         Prefs.putInt(KEY_QUEUE_INDEX, currentQueueIndex)
         Prefs.putString(KEY_CONTEXT_JSON, gson.toJson(context))
-        if (getSavePositionEnabled()) Prefs.putLong(KEY_POSITION, position) else Prefs.remove(KEY_POSITION)
+        if (getSavePositionEnabled()) positionPrefs.putLong(KEY_POSITION, position) else positionPrefs.remove(KEY_POSITION)
         Prefs.putBoolean(KEY_SHUFFLE_MODE, shuffleEnabled)
         Prefs.putString(KEY_REPEAT_MODE, repeatMode.name)
     }
 
     fun savePosition(position: Long) {
         if (getSavePositionEnabled()) {
-            Prefs.putLong(KEY_POSITION, position)
+            // Written to a dedicated NamedPrefs file, not the main Prefs map. The position is saved
+            // every 5 seconds during playback; writing it to Prefs triggered a full re-encode of
+            // prefs.json (including large blobs like KEY_TRACK_JSON, KEY_CONTEXT_JSON,
+            // cached_user_uploads) on every position tick. The dedicated file holds only this one
+            // key, so the rewrite is a few bytes (audit Phase 5 IO gain).
+            positionPrefs.putLong(KEY_POSITION, position)
         }
     }
 
@@ -1558,7 +1763,7 @@ class PlayerPreferences {
     fun saveDownloadLocation(uriString: String?) = if (uriString != null) Prefs.putString(KEY_DOWNLOAD_DIR, uriString) else Prefs.remove(KEY_DOWNLOAD_DIR)
     fun getDownloadLocation(): String? = Prefs.getString(KEY_DOWNLOAD_DIR, null)
     fun getLastTrack(): Track? { if (!getPersistentQueueEnabled()) return null; val json = Prefs.getString(KEY_TRACK_JSON, null) ?: return null; return try { gson.fromJson(json, Track::class.java) } catch (_: Exception) { null } }
-    fun getLastPosition(): Long = if (getSavePositionEnabled()) Prefs.getLong(KEY_POSITION, 0L) else 0L
+    fun getLastPosition(): Long = if (getSavePositionEnabled()) positionPrefs.getLong(KEY_POSITION, 0L) else 0L
     fun getLastQueueIndex(): Int = Prefs.getInt(KEY_QUEUE_INDEX, -1)
     fun getLastQueue(): List<Track> = getLastQueueSnapshot().tracks
 

@@ -36,8 +36,10 @@ import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 
 private object ExtractorDownloader : Downloader() {
+    // Derived from the shared client so the pool and dispatcher are ProxyManager's; the cookie
+    // jar and interceptor are this downloader's own (RAM, issue #33).
     private val baseClient by lazy {
-        OkHttpClient.Builder()
+        com.alananasss.kittytune.data.network.ProxyManager.getOkHttpClient().newBuilder()
             .retryOnConnectionFailure(true)
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
@@ -120,8 +122,9 @@ private object ExtractorDownloader : Downloader() {
  */
 object StreamResolver {
 
+    // Shares ProxyManager's pool and dispatcher; the cookie jar is this resolver's own.
     private val baseClient by lazy {
-        OkHttpClient.Builder()
+        com.alananasss.kittytune.data.network.ProxyManager.getOkHttpClient().newBuilder()
             .retryOnConnectionFailure(true)
             .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
             .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
@@ -206,9 +209,10 @@ object StreamResolver {
      * decision. And if the fresh data really has no usable candidate, the fallback still runs from there.
      */
     fun isRestricted(track: Track): Boolean {
-        return track.policy == "SNIP" ||
-            track.policy == "BLOCK" ||
-            track.monetizationModel == "SUB_HIGH_TIER"
+        return track.policy.equals("SNIP", ignoreCase = true) ||
+            track.policy.equals("BLOCK", ignoreCase = true) ||
+            track.monetizationModel.equals("SUB_HIGH_TIER", ignoreCase = true) ||
+            track.isSnipped
     }
 
     suspend fun resolveStream(track: Track, forDownload: Boolean = false): String? {
@@ -219,15 +223,31 @@ object StreamResolver {
         if (!forDownload) {
             val cached = streamCache[track.id]
             if (cached != null) {
-                if (cached.isUsable()) return cached.stream
+                if (cached.isUsable() && (!isRestricted(track) || (cached.stream.source != "soundcloud" && cached.stream.source != null))) {
+                    return cached.stream
+                }
                 streamCache.remove(track.id)
                 // One expiry is a good moment to drop the others: they all age on the same clock.
                 streamCache.retainWhere { it.isUsable() }
             }
         }
         val result = withContext(Dispatchers.IO) {
+            var trackToResolve = track
+            if (track.source == "soundcloud" || track.source.isNullOrEmpty()) {
+                if (track.id > 0 && (track.media == null || track.media.transcodings.isNullOrEmpty() || track.policy == null)) {
+                    try {
+                        val fetched = RetrofitClient.create().getTracksByIds(track.id.toString())
+                        if (fetched.isNotEmpty()) {
+                            trackToResolve = fetched[0]
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+
+            val restricted = isRestricted(trackToResolve)
+
             try {
-                val localTrack = DownloadManager.getLocalTrack(track.id)
+                val localTrack = DownloadManager.getLocalTrack(trackToResolve.id)
                 if (localTrack != null && localTrack.localAudioPath.isNotEmpty()) {
                     val fileExists = java.io.File(localTrack.localAudioPath).exists()
                     if (fileExists) {
@@ -239,27 +259,35 @@ object StreamResolver {
             }
             // A track heard before plays from the cache: no network, no stream to expire.
             if (!forDownload) {
-                com.alananasss.kittytune.data.cache.AudioCache.lookup(track.id)?.let { cached ->
-                    return@withContext ResolvedStream(cached.absolutePath, source = track.source ?: "cache")
+                val cached = com.alananasss.kittytune.data.cache.AudioCache.lookup(trackToResolve.id)
+                if (cached != null) {
+                    val isCachedSnippet = restricted && cached.length() < 1_000_000L
+                    if (isCachedSnippet) {
+                        Logger.w("StreamResolver", "Cached file for restricted track '${trackToResolve.title}' is a snippet (${cached.length()} bytes). Evicting from cache.")
+                        com.alananasss.kittytune.data.cache.AudioCache.evict(trackToResolve.id)
+                    } else {
+                        return@withContext ResolvedStream(cached.absolutePath, source = trackToResolve.source ?: "cache")
+                    }
                 }
             }
-            if (track.source == "youtube" || track.source == "youtube_music") {
-                val url = resolveFromYoutubeDirect(track)
-                return@withContext url?.let { ResolvedStream(it, source = track.source) }
+ 
+            if (trackToResolve.source == "youtube" || trackToResolve.source == "youtube_music") {
+                val url = resolveFromYoutubeDirect(trackToResolve)
+                return@withContext url?.let { ResolvedStream(it, source = trackToResolve.source) }
             }
 
-            if (track.source == "spotify") {
-                Logger.d("StreamResolver", "Resolving Spotify track via configured audio providers: ${track.title} by ${track.displayArtist}")
-                val providerStream = resolveViaProviders(track, forDownload)
+            if (trackToResolve.source == "spotify") {
+                Logger.d("StreamResolver", "Resolving Spotify track via configured audio providers: ${trackToResolve.title} by ${trackToResolve.displayArtist}")
+                val providerStream = resolveViaProviders(trackToResolve, forDownload)
                 if (providerStream != null) {
                     return@withContext providerStream
                 }
-                val streamUrl = resolveViaNewPipe(track)
+                val streamUrl = resolveViaNewPipe(trackToResolve)
                 if (streamUrl != null) {
                     return@withContext ResolvedStream(streamUrl, source = "youtube")
                 }
                 try {
-                    val query = "${track.displayArtist} ${track.title}".trim()
+                    val query = "${trackToResolve.displayArtist} ${trackToResolve.title}".trim()
                     val scResults = RetrofitClient.create().searchTracks(query, limit = 5)
                     val bestScTrack = scResults.collection.firstOrNull()
                     if (bestScTrack != null) {
@@ -272,56 +300,65 @@ object StreamResolver {
                 return@withContext null
             }
 
-            if (track.source in listOf("deezer", "tidal", "qobuz") ||
-                track.permalink?.startsWith("deezer:") == true ||
-                track.permalink?.startsWith("tidal:") == true ||
-                track.permalink?.startsWith("qobuz:") == true) {
-                Logger.d("StreamResolver", "Resolving direct provider track (${track.source}): ${track.title} by ${track.displayArtist}")
-                val providerStream = resolveViaProviders(track, forDownload)
+            if (trackToResolve.source in listOf("deezer", "tidal", "qobuz") ||
+                trackToResolve.permalink?.startsWith("deezer:") == true ||
+                trackToResolve.permalink?.startsWith("tidal:") == true ||
+                trackToResolve.permalink?.startsWith("qobuz:") == true) {
+                Logger.d("StreamResolver", "Resolving direct provider track (${trackToResolve.source}): ${trackToResolve.title} by ${trackToResolve.displayArtist}")
+                val providerStream = resolveViaProviders(trackToResolve, forDownload)
                 if (providerStream != null) {
                     return@withContext providerStream
                 }
                 val allowYoutubeFallback = PlayerPreferences().getYouTubeFallbackEnabled()
                 if (allowYoutubeFallback) {
-                    Logger.w("StreamResolver", "Provider track (${track.source}) resolution failed, trying YouTube fallback for: ${track.title}")
-                    val ytFallback = resolveViaNewPipe(track)
+                    Logger.w("StreamResolver", "Provider track (${trackToResolve.source}) resolution failed, trying YouTube fallback for: ${trackToResolve.title}")
+                    val ytFallback = resolveViaNewPipe(trackToResolve)
                     if (ytFallback != null) {
                         return@withContext ResolvedStream(ytFallback, source = "youtube")
                     }
                 }
-                Logger.w("StreamResolver", "Could not resolve provider track (${track.source}): ${track.title}")
+                Logger.w("StreamResolver", "Could not resolve provider track (${trackToResolve.source}): ${trackToResolve.title}")
                 return@withContext null
             }
 
             val prefs = PlayerPreferences()
             val allowYoutube = prefs.getYouTubeFallbackEnabled()
 
-            if (isRestricted(track)) {
-                val providerStream = resolveViaProviders(track, forDownload)
+            if (restricted) {
+                Logger.i("StreamResolver", "Track '${trackToResolve.title}' is restricted on SoundCloud (SNIP/BLOCK/Go+). Resolving via providers/YouTube first.")
+                val providerStream = resolveViaProviders(trackToResolve, forDownload)
                 if (providerStream != null) {
                     return@withContext providerStream
                 }
                 if (allowYoutube) {
-                    val streamUrl = resolveViaNewPipe(track)
+                    val streamUrl = resolveViaNewPipe(trackToResolve)
                     if (streamUrl != null) {
                         return@withContext ResolvedStream(streamUrl, source = "youtube")
                     }
                 }
             }
 
-            val scStream = resolveFromSoundCloudWithDrm(track, forDownload)
+            val scStream = resolveFromSoundCloudWithDrm(trackToResolve, forDownload, allowSnippet = false)
             if (scStream != null) {
                 scStream
             } else {
-                val providerFallback = resolveViaProviders(track, forDownload)
+                val providerFallback = if (!restricted) resolveViaProviders(trackToResolve, forDownload) else null
                 if (providerFallback != null) {
                     providerFallback
-                } else if (allowYoutube) {
-                    Logger.w("StreamResolver", "All sources failed for '${track.title}', trying final YouTube fallback")
-                    val ytUrl = resolveViaNewPipe(track)
-                    ytUrl?.let { ResolvedStream(it, source = "youtube") }
                 } else {
-                    null
+                    val ytFallback = if (!restricted && allowYoutube) {
+                        Logger.w("StreamResolver", "All sources failed for '${trackToResolve.title}', trying final YouTube fallback")
+                        resolveViaNewPipe(trackToResolve)?.let { ResolvedStream(it, source = "youtube") }
+                    } else null
+
+                    if (ytFallback != null) {
+                        ytFallback
+                    } else if (restricted) {
+                        Logger.w("StreamResolver", "All alternatives failed for restricted track '${trackToResolve.title}', using 30s preview snippet as last resort")
+                        resolveFromSoundCloudWithDrm(trackToResolve, forDownload, allowSnippet = true)
+                    } else {
+                        null
+                    }
                 }
             }
         }
@@ -353,7 +390,11 @@ object StreamResolver {
         val title = track.title?.trim().orEmpty()
         val artist = (track.displayArtist.ifBlank { track.user?.username.orEmpty() }).trim()
         val album = (track.publisherMetadata?.albumTitle ?: track.publisherMetadata?.releaseTitle).orEmpty()
-        val durationMs = track.durationMs ?: 0L
+        val rawDurationMs = track.effectiveFullDurationMs ?: track.durationMs
+        val restricted = isRestricted(track)
+        val isSnippetDuration = restricted && (rawDurationMs == null || rawDurationMs <= 45_000L)
+        val durationMs: Long? = if (isSnippetDuration) null else rawDurationMs
+        val durationSeconds: Int? = durationMs?.let { (it / 1000L).toInt() }
 
         var isrc = ProviderIsrc.normalize(track.publisherMetadata?.isrc)
         if (isrc == null && title.isNotBlank() && artist.isNotBlank()) {
@@ -361,7 +402,7 @@ object StreamResolver {
                 candidateIsrc = null,
                 song = title,
                 artist = artist,
-                durationSeconds = (durationMs / 1000).toInt()
+                durationSeconds = durationSeconds
             )
         }
         val explicitArtists = track.artists?.map { it.name.trim() }?.filter { it.isNotBlank() }.orEmpty()
@@ -371,6 +412,10 @@ object StreamResolver {
         val artists = (explicitArtists + listOf(artist) + splitArtists).filter { it.isNotBlank() }.distinct()
 
         val enabled = order.distinct().filter { provider ->
+            if (restricted && provider == AudioProviderOrderItem.SOUNDCLOUD) {
+                // Do not query SoundCloud preview when resolving alternatives for restricted track
+                return@filter false
+            }
             val disabled = prefs.isAudioProviderDisabled(provider)
             if (disabled) Logger.d("StreamResolver", "Provider $provider is disabled, skipping for '${track.title}'")
             !disabled
@@ -471,8 +516,9 @@ object StreamResolver {
                         }
                     }
                     AudioProviderOrderItem.SOUNDCLOUD -> {
+                        if (restricted) return null
                         if (track.source == "soundcloud" || track.source.isNullOrEmpty()) {
-                            val scStream = resolveFromSoundCloudWithDrm(track, forDownload)
+                            val scStream = resolveFromSoundCloudWithDrm(track, forDownload, allowSnippet = false)
                             if (scStream != null) return scStream
                         } else if (track.source in listOf("deezer", "tidal", "qobuz")) {
                             Logger.d("StreamResolver", "Skipping SoundCloud text-search fallback for ${track.source} track: ${track.title}")
@@ -481,8 +527,8 @@ object StreamResolver {
                                 val q = "$artist $title".trim()
                                 val scResults = RetrofitClient.create().searchTracks(q, limit = 5)
                                 val bestScTrack = scResults.collection.firstOrNull()
-                                if (bestScTrack != null) {
-                                    val scStream = resolveFromSoundCloudWithDrm(bestScTrack, forDownload)
+                                if (bestScTrack != null && !isRestricted(bestScTrack)) {
+                                    val scStream = resolveFromSoundCloudWithDrm(bestScTrack, forDownload, allowSnippet = false)
                                     if (scStream != null) return scStream
                                 }
                             } catch (e: Exception) {
@@ -552,8 +598,12 @@ object StreamResolver {
     private fun resolveViaNewPipe(track: Track): String? {
         return try {
             val cleanTitle = track.title?.replace(Regex("(?i)(\\[.*?\\]|\\(.*?\\))"), "")?.trim() ?: ""
-            val artistName = track.displayArtist.ifBlank { track.user?.username.orEmpty() }
-            val query = "$cleanTitle $artistName audio"
+            val artistName = track.displayArtist.ifBlank { track.user?.username.orEmpty() }.trim()
+            val query = if (artistName.isNotBlank() && !cleanTitle.contains(artistName, ignoreCase = true)) {
+                "$cleanTitle $artistName"
+            } else {
+                cleanTitle.ifBlank { track.title.orEmpty().trim() }
+            }
 
             val youtubeService = ServiceList.YouTube
             val searchInfo = SearchInfo.getInfo(youtubeService, youtubeService.searchQHFactory.fromQuery(query, listOf("videos"), ""))
@@ -566,17 +616,26 @@ object StreamResolver {
             // a "sped up" edit. A substitute has to be the same length as the thing it replaces, so results
             // whose duration is nowhere near the track's are dropped, and among what is left the closest
             // wins (issue #33).
-            val wantedSec = (track.durationMs ?: 0L) / 1000
+            val rawDurationMs = track.effectiveFullDurationMs ?: track.durationMs ?: 0L
+            val restricted = isRestricted(track)
+            val isSnippetDuration = restricted && rawDurationMs <= 45_000L
+            val wantedSec = if (isSnippetDuration) 0L else rawDurationMs / 1000L
             val firstResultUrl = if (wantedSec <= 0) {
-                // No duration to check against — nothing better than the top hit, but nothing worse either.
-                videoResults.first().url
+                // No duration or snippet track — prefer a full-length video (>45s) over teasers
+                val nonTeaser = videoResults.firstOrNull { it.duration > 45 }
+                (nonTeaser ?: videoResults.first()).url
             } else {
                 val matched = videoResults
                     .filter { it.duration > 0 && kotlin.math.abs(it.duration - wantedSec) <= DURATION_TOLERANCE_SEC }
                     .minByOrNull { kotlin.math.abs(it.duration - wantedSec) }
+                    ?: if (restricted) {
+                        videoResults.filter { it.duration > 0 && kotlin.math.abs(it.duration - wantedSec) <= 30L }
+                            .minByOrNull { kotlin.math.abs(it.duration - wantedSec) }
+                            ?: videoResults.firstOrNull { it.duration > 45 }
+                    } else null
                 if (matched == null) {
                     println(
-                        "StreamResolver: no YouTube result within ${DURATION_TOLERANCE_SEC}s of " +
+                        "StreamResolver: no YouTube result within tolerance of " +
                             "${wantedSec}s for '${track.title}' — refusing to substitute a different song"
                     )
                     return null
@@ -645,12 +704,16 @@ object StreamResolver {
         }
     }
 
-    private suspend fun resolveFromSoundCloudWithDrm(track: Track, forDownload: Boolean): ResolvedStream? {
+    private suspend fun resolveFromSoundCloudWithDrm(
+        track: Track,
+        forDownload: Boolean,
+        allowSnippet: Boolean = true
+    ): ResolvedStream? {
         val prefs = PlayerPreferences()
         val api = RetrofitClient.create()
         var trackToUse = track
 
-        if (track.media == null || track.media.transcodings.isNullOrEmpty()) {
+        if (track.media == null || track.media.transcodings.isNullOrEmpty() || track.policy == null) {
             try {
                 val fetched = api.getTracksByIds(track.id.toString())
                 if (fetched.isNotEmpty()) trackToUse = fetched[0] else return null
@@ -659,17 +722,24 @@ object StreamResolver {
             }
         }
 
-        val transcodings = trackToUse.media?.transcodings ?: return null
+        if (!allowSnippet && isRestricted(trackToUse)) {
+            return null
+        }
+
+        val allTranscodings = trackToUse.media?.transcodings ?: return null
+        val transcodings = if (!allowSnippet) {
+            allTranscodings.filter { it.snipped != true }
+        } else {
+            allTranscodings
+        }
+        if (transcodings.isEmpty()) return null
+
         val qualityPref = prefs.getAudioQuality()
 
         // Desktop cannot decrypt Widevine, so DRM candidates are never allowed.
         val candidates = buildTranscodingCandidates(transcodings, qualityPref, forDownload, allowDrm = false)
 
         if (candidates.isEmpty()) {
-            if (prefs.getYouTubeFallbackEnabled()) {
-                val url = resolveViaNewPipe(track)
-                return url?.let { ResolvedStream(it, source = "youtube") }
-            }
             return null
         }
 

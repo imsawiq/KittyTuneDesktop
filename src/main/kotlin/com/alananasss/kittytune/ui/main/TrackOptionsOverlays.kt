@@ -48,6 +48,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PersonOff
 import androidx.compose.material.icons.automirrored.rounded.Comment
 import androidx.compose.material.icons.rounded.ContentCut
 import androidx.compose.material.icons.automirrored.rounded.PlaylistPlay
@@ -391,7 +392,7 @@ private fun ArtistPickerRow(
 
 @Composable
 private fun MenuSheetContent(viewModel: PlayerViewModel) {
-    val track = viewModel.trackForMenu ?: viewModel.currentTrack ?: return
+    val track = viewModel.trackForMenu ?: viewModel.uiCurrentTrack ?: return
     val downloadProgress by DownloadManager.downloadProgress.collectAsState()
     val storageTrigger by DownloadManager.storageTrigger.collectAsState()
     val likedTracks by com.alananasss.kittytune.data.LikeRepository.likedTracks.collectAsState()
@@ -498,20 +499,20 @@ private fun MenuSheetContent(viewModel: PlayerViewModel) {
                         id = "shuffle",
                         icon = Icons.Rounded.Shuffle,
                         text = str("menu_shuffle"),
-                        tint = activeColor.takeIf { viewModel.shuffleEnabled },
+                        tint = activeColor.takeIf { viewModel.uiShuffleEnabled },
                     ) { viewModel.toggleShuffle() }
                 )
                 add(
                     MenuOptionItem(
                         id = "repeat",
-                        icon = if (viewModel.repeatMode == RepeatMode.ONE) Icons.Rounded.RepeatOne
+                        icon = if (viewModel.uiRepeatMode == RepeatMode.ONE) Icons.Rounded.RepeatOne
                         else Icons.Rounded.Repeat,
-                        text = when (viewModel.repeatMode) {
+                        text = when (viewModel.uiRepeatMode) {
                             RepeatMode.ALL -> str("menu_repeat_all")
                             RepeatMode.ONE -> str("menu_repeat_one")
                             else -> str("menu_repeat")
                         },
-                        tint = activeColor.takeIf { viewModel.repeatMode != RepeatMode.NONE },
+                        tint = activeColor.takeIf { viewModel.uiRepeatMode != RepeatMode.NONE },
                     ) { viewModel.toggleRepeatMode() }
                 )
             }
@@ -594,6 +595,54 @@ private fun MenuSheetContent(viewModel: PlayerViewModel) {
                 })
                 add(MenuOptionItem("share", Icons.Outlined.Share, str("btn_share")) { viewModel.shareTrack(track) })
             }
+            // Content filtering (issue #41): hide track / block artist, like Android.
+            run {
+                val blockedTrackIds by com.alananasss.kittytune.data.BlockManager.blockedTrackIdsFlow.collectAsState()
+                val blockedArtistIds by com.alananasss.kittytune.data.BlockManager.blockedArtistIdsFlow.collectAsState()
+                val isTrackBlocked = track.id in blockedTrackIds
+                val menuArtistId = track.user?.id
+                val menuArtistName = track.user?.username
+                val isArtistBlocked = menuArtistId != null && menuArtistId in blockedArtistIds
+                add(
+                    MenuOptionItem(
+                        id = "block_track",
+                        icon = if (isTrackBlocked) Icons.Outlined.VisibilityOff else Icons.Rounded.VisibilityOff,
+                        text = if (isTrackBlocked) str("menu_unblock_track") else str("menu_block_track"),
+                    ) {
+                        if (isTrackBlocked) {
+                            com.alananasss.kittytune.data.BlockManager.unblockTrack(track.id)
+                        } else {
+                            com.alananasss.kittytune.data.BlockManager.blockTrack(
+                                track,
+                                currentlyPlayingId = viewModel.currentTrack?.id,
+                            )
+                        }
+                        viewModel.showMenuSheet = false
+                    }
+                )
+                if (menuArtistId != null && menuArtistId != 0L && !menuArtistName.isNullOrBlank()) {
+                    add(
+                        MenuOptionItem(
+                            id = "block_artist",
+                            icon = if (isArtistBlocked) Icons.Rounded.Person else Icons.Rounded.PersonOff,
+                            text = if (isArtistBlocked) str("menu_unblock_artist") else str("menu_block_artist"),
+                        ) {
+                            if (isArtistBlocked) {
+                                com.alananasss.kittytune.data.BlockManager.unblockArtist(menuArtistId)
+                            } else {
+                                com.alananasss.kittytune.data.BlockManager.blockArtist(
+                                    artistId = menuArtistId,
+                                    artistName = menuArtistName,
+                                    avatarUrl = track.user?.avatarUrl,
+                                    source = track.source ?: "soundcloud",
+                                    currentlyPlayingTrack = viewModel.currentTrack,
+                                )
+                            }
+                            viewModel.showMenuSheet = false
+                        }
+                    )
+                }
+            }
             if (viewModel.menuContextPlaylistId != null && (viewModel.menuContextPlaylistId!! < 0 || viewModel.menuContextPlaylistId == -2L)) {
                 add(MenuOptionItem("remove_from_playlist", Icons.Outlined.Delete, str("menu_remove")) { viewModel.removeFromContextPlaylist(viewModel.menuContextPlaylistId!!, track) })
             }
@@ -629,7 +678,7 @@ private fun MenuSheetContent(viewModel: PlayerViewModel) {
                         },
                         tint = MaterialTheme.colorScheme.error.takeIf { isDownloaded },
                         iconContent = { tint ->
-                            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(30.dp)) {
+                            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(26.dp)) {
                                 if (isDownloading) {
                                     val animatedProgress by animateFloatAsState(
                                         targetValue = (downloadProgressVal ?: 0) / 100f,
@@ -639,12 +688,12 @@ private fun MenuSheetContent(viewModel: PlayerViewModel) {
                                         progress = { animatedProgress },
                                         modifier = Modifier.fillMaxSize(),
                                     )
-                                    Icon(Icons.Outlined.Cancel, null, modifier = Modifier.size(18.dp))
+                                    Icon(Icons.Outlined.Cancel, null, modifier = Modifier.size(16.dp))
                                 } else {
                                     Icon(
                                         if (isDownloaded) Icons.Rounded.Delete else Icons.Rounded.Download,
                                         null,
-                                        modifier = Modifier.size(30.dp),
+                                        modifier = Modifier.size(26.dp),
                                         tint = tint,
                                     )
                                 }
@@ -866,7 +915,11 @@ private fun SleepTimerDialog(viewModel: PlayerViewModel) {
                 Spacer(Modifier.height(12.dp))
 
                 // Quick-select chips row
-                androidx.compose.foundation.lazy.LazyRow(
+                val chipsState = androidx.compose.foundation.lazy.rememberLazyListState()
+                com.alananasss.kittytune.ui.common.ScrollableLazyRow(
+                    state = chipsState,
+                    showsArrows = false,
+                    fadeLength = 20.dp,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     contentPadding = PaddingValues(horizontal = 2.dp),
                 ) {
@@ -1211,7 +1264,7 @@ internal suspend fun loadPlaylistTracksForMenu(
 
 @Composable
 private fun CommentsSheetContent(viewModel: PlayerViewModel) {
-    val track = viewModel.selectedTrackForSheet ?: viewModel.trackForMenu ?: viewModel.currentTrack
+    val track = viewModel.selectedTrackForSheet ?: viewModel.trackForMenu ?: viewModel.uiCurrentTrack
     val commentsListState = androidx.compose.foundation.lazy.rememberLazyListState()
     var sortScrollPosition by remember(track?.id) { mutableStateOf<Pair<Int, Int>?>(null) }
     LaunchedEffect(viewModel.commentsLoadRevision) {
@@ -1475,7 +1528,7 @@ private fun MenuTileGrid(menu: String, items: List<MenuOptionItem>) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
         state = gridState,
-        verticalArrangement = Arrangement.spacedBy(20.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.heightIn(max = 420.dp)
     ) {
@@ -1504,20 +1557,17 @@ private fun ReorderableCollectionItemScope.MenuTile(
     // Lifted rather than shadowed: the tile has no container of its own to cast one.
     val scale by animateFloatAsState(if (isDragging) 1.12f else 1f, label = "menuTileScale")
 
-    Box {
+    Box(modifier = Modifier.fillMaxWidth().height(88.dp)) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
-                // Fills its cell, which it used to get for free.
+                // Fills its cell with uniform width and height for every tile in the grid.
                 //
-                // A grid cell hands its item an exact width, so the tile filled it and its icon sat in
-                // the middle. [ReorderableItem] wraps what it is given in a Box, and a Box does not
-                // pass a minimum width down, so the tile started measuring itself against its own
-                // label instead: short labels ended up hugging the left of their cell and long ones
-                // reaching the middle, and no two icons in a column lined up. Asking for the width
-                // back restores it, and gives the click and its ripple the whole tile while it is
-                // there (issue #33).
-                .fillMaxWidth()
+                // A grid cell hands its item an exact width, and giving every tile a matching fixed
+                // height (88.dp) ensures all tiles have identical size and rounded container boundaries
+                // regardless of whether their label is 1 or 2 lines. Icons line up in straight rows
+                // and labels sit vertically centered in their allocated slot.
+                .fillMaxSize()
                 .graphicsLayer { scaleX = scale; scaleY = scale }
                 .clip(RoundedCornerShape(16.dp))
                 .background(
@@ -1530,25 +1580,32 @@ private fun ReorderableCollectionItemScope.MenuTile(
                     onClick = { contextMenuOpen = true },
                 )
                 .clickable { item.onClick() }
-                .padding(horizontal = 6.dp, vertical = 12.dp)
+                .pointerHoverIcon(PointerIcon.Hand)
+                .padding(horizontal = 6.dp, vertical = 10.dp)
         ) {
-            // One size and one tone for every icon: the old per-item outlines and the default set were the
-            // mismatched part of this menu.
+            // One size and one tone for every icon: 26.dp centered in a matching slot.
             val icon = item.iconContent
-            if (icon != null) {
-                icon(tint)
-            } else {
-                Icon(item.icon, null, modifier = Modifier.size(26.dp), tint = tint)
+            Box(modifier = Modifier.size(26.dp), contentAlignment = Alignment.Center) {
+                if (icon != null) {
+                    icon(tint)
+                } else {
+                    Icon(item.icon, null, modifier = Modifier.size(26.dp), tint = tint)
+                }
             }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = item.text,
-                style = MaterialTheme.typography.labelMedium,
-                textAlign = TextAlign.Center,
-                color = tint,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Spacer(Modifier.height(6.dp))
+            Box(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = item.text,
+                    style = MaterialTheme.typography.labelMedium,
+                    textAlign = TextAlign.Center,
+                    color = tint,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
 
         DropdownMenu(expanded = contextMenuOpen, onDismissRequest = { contextMenuOpen = false }) {

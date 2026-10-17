@@ -1,5 +1,6 @@
     package com.alananasss.kittytune.domain
     
+    import androidx.compose.runtime.Immutable
     import com.alananasss.kittytune.data.network.LongIdAdapter
     import com.google.gson.annotations.JsonAdapter
     import com.google.gson.annotations.SerializedName
@@ -326,6 +327,40 @@
         @SerializedName("user") val user: User?
     )
 
+    // Featured playlists ("Appears in", most popular first) — what the official app shows.
+    // GraphQL: query FeaturedPlaylists($input: FeaturedPlaylistsInput!)
+    //   { featuredPlaylists(input: $input) { urn } }
+    // with variables {"input": {"trackUrn": "soundcloud:tracks:<id>", "filter": "PLAYLIST", "limit": N}}.
+    // The server returns playlist URNs already ordered by popularity, so no client-side
+    // fetching of dozens of /playlists pages + sorting by likes is needed.
+    data class FeaturedPlaylistsGraphQlRequest(
+        @SerializedName("operationName") val operationName: String = "FeaturedPlaylists",
+        @SerializedName("query") val query: String = "query FeaturedPlaylists(\$input: FeaturedPlaylistsInput!) { featuredPlaylists(input: \$input) { urn } }",
+        @SerializedName("variables") val variables: FeaturedPlaylistsVariables
+    )
+
+    data class FeaturedPlaylistsVariables(
+        @SerializedName("input") val input: FeaturedPlaylistsInput
+    )
+
+    data class FeaturedPlaylistsInput(
+        @SerializedName("trackUrn") val trackUrn: String,
+        @SerializedName("filter") val filter: String = "PLAYLIST",
+        @SerializedName("limit") val limit: Int = 100
+    )
+
+    data class FeaturedPlaylistsGraphQlResponse(
+        @SerializedName("data") val data: FeaturedPlaylistsData?
+    )
+
+    data class FeaturedPlaylistsData(
+        @SerializedName("featuredPlaylists") val featuredPlaylists: List<FeaturedPlaylistUrn>?
+    )
+
+    data class FeaturedPlaylistUrn(
+        @SerializedName("urn") val urn: String?
+    )
+
     data class GraphQlUserProfileResponse(
         @SerializedName("data") val data: GraphQlUserProfileData?
     )
@@ -355,6 +390,7 @@
     typealias PublisherMetadata = TrackPublisherMetadata
 
     // track
+    @Immutable
     data class Track(
         val id: Long,
         val title: String?,
@@ -379,6 +415,7 @@
         @SerializedName("policy") val policy: String? = null,
         @SerializedName("monetization_model") val monetizationModel: String? = null,
         @SerializedName("sharing") val sharing: String? = null,
+        @SerializedName("full_duration") val fullDurationMs: Long? = null,
     
         // fixed: source is now nullable to prevent gson crashes
         val source: String? = "soundcloud",
@@ -448,6 +485,15 @@
                 ?: soloArtistFromTitle(title, user?.username)
                 ?: user?.username?.takeIf { it.isNotBlank() }
                 ?: ""
+
+        val isSnipped: Boolean
+            get() = policy.equals("SNIP", ignoreCase = true) ||
+                monetizationModel.equals("SUB_HIGH_TIER", ignoreCase = true) ||
+                media?.transcodings?.any { it.snipped == true } == true ||
+                (fullDurationMs != null && durationMs != null && durationMs <= 45_000L && (fullDurationMs - durationMs) > 15_000L)
+
+        val effectiveFullDurationMs: Long?
+            get() = fullDurationMs?.takeIf { it > 0L } ?: durationMs
 
         val fullResArtwork: String
             get() {
@@ -627,6 +673,7 @@
     )
     
     // playlist
+    @Immutable
     data class Playlist(
         @JsonAdapter(LongIdAdapter::class) val id: Long,
         val title: String?,
@@ -717,6 +764,7 @@
     }
     
     // user
+    @Immutable
     data class User(
         val id: Long,
         val username: String?,
@@ -789,7 +837,13 @@
     data class Visuals(val visuals: List<VisualItem>?)
     data class VisualItem(@SerializedName("visual_url") val visualUrl: String)
     data class Media(val transcodings: List<Transcoding>?)
-    data class Transcoding(val url: String, val preset: String, val format: Format?)
+    data class Transcoding(
+        val url: String,
+        val preset: String,
+        val format: Format?,
+        val snipped: Boolean? = null,
+        val duration: Long? = null
+    )
     data class Format(val protocol: String?, @SerializedName("mime_type") val mimeType: String?)
     data class StreamUrlResponse(
         val url: String?,

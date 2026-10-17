@@ -87,6 +87,7 @@ import com.alananasss.kittytune.domain.Playlist
 import com.alananasss.kittytune.domain.Track
 import com.alananasss.kittytune.domain.User
 import com.alananasss.kittytune.ui.common.viewableCover
+import com.alananasss.kittytune.ui.common.rememberFilteredTracks
 import com.alananasss.kittytune.ui.common.TrackListItemShimmer
 import com.alananasss.kittytune.ui.player.PlaybackContext
 import com.alananasss.kittytune.ui.player.PlayerViewModel
@@ -476,7 +477,11 @@ fun PlaylistDetailScreen(
         wasDragging = isDragging
     }
 
-    val rawTracks: List<Track> = if (playlistId == "likes") likedTracksRepo else tracks
+    val unfilteredTracks: List<Track> = if (playlistId == "likes") likedTracksRepo else tracks
+    // Content filtering (issue #41): blocked tracks — and tracks of blocked
+    // artists, via BlockManager.isBlocked — are hidden from every list below,
+    // including the queue built from it. Uniform for likes too, by design.
+    val rawTracks = rememberFilteredTracks(unfilteredTracks)
 
     // Warm the album cache from SQLite so already-resolved rows render instantly.
     LaunchedEffect(rawTracks.size) {
@@ -1255,9 +1260,9 @@ fun PlaylistDetailScreen(
             onDismissRequest = { showEditDialog = false },
             onSave = { title, description, sharing, tagList, genre, setType, releaseDate, permalink ->
                 showEditDialog = false
-                // Routes through DownloadManager so the local DB stays in sync, the
-                // online track list is preserved (trackUrns re-fetched) and DataDome
-                // 403 captchas are handled — same path as Android.
+                // Routes through DownloadManager so the local DB stays in sync and the
+                // online track list is preserved (trackUrns re-fetched) — same path as
+                // Android.
                 DownloadManager.editPlaylistMetadata(
                     playlistId = currentIdLong,
                     newTitle = title,
@@ -1915,7 +1920,7 @@ fun PlaylistDetailScreen(
                             if (TrackViewModePref.mode == TrackViewMode.COMPACT) {
                                 TrackCompactItem(
                                     track = track,
-                                    currentlyPlayingTrack = playerViewModel.currentTrack,
+                                    currentlyPlayingTrack = playerViewModel.uiCurrentTrack,
                                     index = index,
                                     isDownloading = isDownloading,
                                     isDownloaded = isDownloaded,
@@ -1936,7 +1941,7 @@ fun PlaylistDetailScreen(
                             } else {
                                 TrackTableItem(
                                     track = track,
-                                    currentlyPlayingTrack = playerViewModel.currentTrack,
+                                    currentlyPlayingTrack = playerViewModel.uiCurrentTrack,
                                     index = index,
                                     isDownloading = isDownloading,
                                     isDownloaded = isDownloaded,

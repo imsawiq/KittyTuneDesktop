@@ -6,6 +6,15 @@
 #include <float.h>
 #include <cstdint>
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <signal.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <sys/resource.h>
+#endif
+
 extern "C" {
 #include "ebur128/ebur128.h"
 }
@@ -434,6 +443,31 @@ Java_com_alananasss_kittytune_audio_NormalizationAudioProcessor_nativeDestroy(
     LOGI("DSP destroyed");
 }
 
+// Static companion method used by the java.lang.ref.Cleaner for defence-in-depth cleanup of
+// orphaned processors. Same body as nativeDestroy above; the JVM resolves this symbol for the
+// @JvmStatic external fun declared in the companion object. See NormalizationAudioProcessor.kt
+// for the full rationale.
+JNIEXPORT void JNICALL
+Java_com_alananasss_kittytune_audio_NormalizationAudioProcessor_nativeDestroyHandle(
+    JNIEnv* env, jclass clazz, jlong handle) {
+
+    KittyTuneDSPState* s = (KittyTuneDSPState*)(intptr_t)handle;
+    if (!s) return;
+
+    if (s->ebur128) {
+        ebur128_destroy(&s->ebur128);
+        s->ebur128 = NULL;
+    }
+
+    destroyLimiter(s);
+    if (s->processBuffer) {
+        free(s->processBuffer);
+        s->processBuffer = NULL;
+    }
+    free(s);
+    LOGI("DSP destroyed (via Cleaner)");
+}
+
 JNIEXPORT void JNICALL
 Java_com_alananasss_kittytune_audio_NormalizationAudioProcessor_nativeSetTargetLevel(
     JNIEnv* env, jclass clazz, jlong handle, jfloat targetLUFS) {
@@ -663,6 +697,58 @@ Java_com_alananasss_kittytune_data_AudioScannerManager_nativeGetAnalyzedTruePeak
 
     if (maxTp <= 0.0) return -120.0f;
     return (jfloat)(20.0 * log10(maxTp));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_alananasss_kittytune_audio_ai_karaoke_KaraokeManager_nativePauseProcess(
+    JNIEnv* env, jclass clazz, jlong pid) {
+#if defined(_WIN32)
+    HANDLE h = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, (DWORD)pid);
+    if (!h) return JNI_FALSE;
+    typedef LONG (NTAPI *pfnNtSuspendProcess)(HANDLE);
+    static pfnNtSuspendProcess NtSuspendProcess = (pfnNtSuspendProcess)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtSuspendProcess");
+    jboolean ok = JNI_FALSE;
+    if (NtSuspendProcess) {
+        ok = (NtSuspendProcess(h) >= 0) ? JNI_TRUE : JNI_FALSE;
+    }
+    CloseHandle(h);
+    return ok;
+#else
+    return (kill((pid_t)pid, SIGSTOP) == 0) ? JNI_TRUE : JNI_FALSE;
+#endif
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_alananasss_kittytune_audio_ai_karaoke_KaraokeManager_nativeResumeProcess(
+    JNIEnv* env, jclass clazz, jlong pid) {
+#if defined(_WIN32)
+    HANDLE h = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, (DWORD)pid);
+    if (!h) return JNI_FALSE;
+    typedef LONG (NTAPI *pfnNtResumeProcess)(HANDLE);
+    static pfnNtResumeProcess NtResumeProcess = (pfnNtResumeProcess)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtResumeProcess");
+    jboolean ok = JNI_FALSE;
+    if (NtResumeProcess) {
+        ok = (NtResumeProcess(h) >= 0) ? JNI_TRUE : JNI_FALSE;
+    }
+    CloseHandle(h);
+    return ok;
+#else
+    return (kill((pid_t)pid, SIGCONT) == 0) ? JNI_TRUE : JNI_FALSE;
+#endif
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_alananasss_kittytune_audio_ai_karaoke_KaraokeManager_nativeSetProcessIdlePriority(
+    JNIEnv* env, jclass clazz, jlong pid) {
+#if defined(_WIN32)
+    HANDLE h = OpenProcess(PROCESS_SET_INFORMATION, FALSE, (DWORD)pid);
+    if (!h) return JNI_FALSE;
+    BOOL ok = SetPriorityClass(h, IDLE_PRIORITY_CLASS);
+    CloseHandle(h);
+    return ok ? JNI_TRUE : JNI_FALSE;
+#else
+    return (setpriority(PRIO_PROCESS, (id_t)pid, 19) == 0) ? JNI_TRUE : JNI_FALSE;
+#endif
 }
 
 } // extern "C"

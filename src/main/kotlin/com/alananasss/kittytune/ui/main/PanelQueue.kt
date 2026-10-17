@@ -69,6 +69,7 @@ import com.alananasss.kittytune.ui.common.Tip
 import com.alananasss.kittytune.ui.player.AnchorCurrentQueueItem
 import com.alananasss.kittytune.ui.player.PlayerViewModel
 import com.alananasss.kittytune.ui.player.queueItemKeys
+import com.alananasss.kittytune.utils.formatQueueDuration
 import com.alananasss.kittytune.utils.makeTimeString
 import com.alananasss.kittytune.ui.common.PlayingBars
 import sh.calvin.reorderable.ReorderableCollectionItemScope
@@ -103,8 +104,8 @@ private const val PAST_COLLAPSE_THRESHOLD = 3
 @Composable
 internal fun QueueList(vm: PlayerViewModel) {
     val listState = rememberLazyListState()
-    val queue = vm.queueState
-    val currentIndex = vm.currentQueueIndex
+    val queue = vm.uiQueueState
+    val currentIndex = vm.uiCurrentQueueIndex
     val keys = remember(queue) { queueItemKeys(queue) }
 
     // Compacted for having been heard, not for sitting at a lower index. Jumping ahead to the sixth
@@ -151,7 +152,7 @@ internal fun QueueList(vm: PlayerViewModel) {
     AnchorCurrentQueueItem(
         listState = listState,
         currentIndex = currentIndex,
-        currentTrackId = vm.currentTrack?.id,
+        currentTrackId = vm.uiCurrentTrack?.id,
         currentKey = currentKey,
         targetIndex = targetListIndex,
     )
@@ -226,7 +227,7 @@ private fun QueueToolbar(vm: PlayerViewModel, upNextCount: Int) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = str("queue_time_left", makeTimeString(leftMs)),
+            text = str("queue_time_left", formatQueueDuration(leftMs)),
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
@@ -365,7 +366,7 @@ private fun ReorderableCollectionItemScope.QueueRow(
             .then(if (isPast && !isHovered) Modifier.alpha(PAST_ROW_ALPHA) else Modifier),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        QueueCover(track, size = if (isPast) 28.dp else 44.dp, isCurrent = isCurrent, isPlaying = vm.isPlaying)
+        QueueCover(track, size = if (isPast) 28.dp else 44.dp, isCurrent = isCurrent, isPlaying = vm.uiIsPlaying)
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(

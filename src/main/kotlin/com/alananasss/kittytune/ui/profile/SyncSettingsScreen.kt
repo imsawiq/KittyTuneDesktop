@@ -48,9 +48,11 @@ import com.alananasss.kittytune.core.EscapableAlertDialog
 import com.alananasss.kittytune.core.str
 import com.alananasss.kittytune.data.sync.KnownDevice
 import com.alananasss.kittytune.data.sync.SyncClient
+import com.alananasss.kittytune.data.sync.ConnectManager
 import com.alananasss.kittytune.data.sync.SyncDiscovery
 import com.alananasss.kittytune.data.sync.SyncLog
 import com.alananasss.kittytune.data.sync.SyncPeers
+import com.alananasss.kittytune.data.sync.SyncPlayback
 import com.alananasss.kittytune.data.sync.SyncScheduler
 import com.alananasss.kittytune.data.sync.SyncService
 import com.alananasss.kittytune.ui.common.QrCode
@@ -270,6 +272,7 @@ fun SyncOptionsPage() {
     val playerPrefs = remember { com.alananasss.kittytune.data.local.PlayerPreferences() }
     var syncLikesEnabled by remember { mutableStateOf(playerPrefs.getSyncLikesEnabled()) }
     var syncListensEnabled by remember { mutableStateOf(playerPrefs.getSyncListensEnabled()) }
+    val independent by ConnectManager.independent.collectAsState()
 
     Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -278,7 +281,7 @@ fun SyncOptionsPage() {
         SettingsGroupTitle(str("sync_what_title"))
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             SettingsItem(
-                shape = getSettingsShape(2, 0),
+                shape = getSettingsShape(3, 0),
                 title = str("sync_listens_title"),
                 subtitle = str("sync_listens_sub"),
                 icon = Icons.Rounded.BarChart,
@@ -291,7 +294,7 @@ fun SyncOptionsPage() {
                 },
             )
             SettingsItem(
-                shape = getSettingsShape(2, 1),
+                shape = getSettingsShape(3, 1),
                 title = str("sync_likes_title"),
                 subtitle = str("sync_likes_sub"),
                 icon = Icons.Rounded.Favorite,
@@ -307,6 +310,18 @@ fun SyncOptionsPage() {
                             SyncScheduler.triggerImmediateSync("sync likes enabled")
                         }
                     }
+                },
+            )
+            SettingsItem(
+                shape = getSettingsShape(3, 2),
+                title = str("sync_playback_title"),
+                subtitle = str("sync_playback_sub"),
+                icon = Icons.Rounded.SyncAlt,
+                hasSwitch = true,
+                switchState = !independent,
+                onSwitchChange = { enabled ->
+                    SyncPlayback.enabled = enabled
+                    if (enabled) SyncScheduler.triggerImmediateSync("playback enabled")
                 },
             )
         }
@@ -439,6 +454,11 @@ private fun DeviceRow(
     shape: androidx.compose.ui.graphics.Shape,
     onForget: () -> Unit,
 ) {
+    val livePeer = ConnectManager.peers.collectAsState().value[device.deviceId]
+    val isOnline = livePeer?.connected == true
+    val selectedDevice by ConnectManager.selectedDevice.collectAsState()
+    val isTarget = selectedDevice == device.deviceId
+
     Surface(
         shape = shape,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -452,7 +472,7 @@ private fun DeviceRow(
                 modifier = Modifier
                     .size(36.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.secondaryContainer),
+                    .background(if (isTarget) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
@@ -460,22 +480,53 @@ private fun DeviceRow(
                     else Icons.Rounded.Computer,
                     null,
                     modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    tint = if (isTarget) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSecondaryContainer,
                 )
             }
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
-                Text(
-                    device.label,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                )
-                Text(
-                    if (device.lastSyncedAtMs > 0) str("sync_last_synced", agoLabel(device.lastSyncedAtMs))
-                    else str("sync_state_never_sub"),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        device.label,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    if (isTarget) {
+                        Spacer(Modifier.width(8.dp))
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                        ) {
+                            Text(
+                                str("connect_active"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(7.dp)
+                            .clip(CircleShape)
+                            .background(if (isOnline) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (isOnline) {
+                            val transport = if (livePeer.transport == "LAN") str("connect_lan") else str("connect_internet")
+                            if (device.lastSyncedAtMs > 0) "$transport • ${str("sync_last_synced", agoLabel(device.lastSyncedAtMs))}"
+                            else transport
+                        } else {
+                            if (device.lastSyncedAtMs > 0) "${str("connect_offline")} • ${str("sync_last_synced", agoLabel(device.lastSyncedAtMs))}"
+                            else str("connect_offline")
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             TextButton(shapes = ButtonDefaults.shapes(), onClick = onForget) { Text(str("sync_forget_device")) }
         }
@@ -496,7 +547,7 @@ private fun DeviceRow(
  * old screen made the reader look for by hand.
  */
 @Composable
-private fun PairDeviceDialog(
+internal fun PairDeviceDialog(
     onDismiss: () -> Unit,
     onPaired: (String) -> Unit,
 ) {

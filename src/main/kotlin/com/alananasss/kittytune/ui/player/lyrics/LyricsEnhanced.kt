@@ -87,7 +87,7 @@ fun LyricsEnhanced(
     val lines = viewModel.lyricsLines
     val isSynced = lines.any { it.startTime > 0 }
     val isWordSyncedFormat = isSynced && viewModel.isWordSyncEnabled && lines.any { it.words.isNotEmpty() }
-    val isDuetActive = viewModel.isDuetActiveForTrack(viewModel.currentTrack)
+    val isDuetActive = viewModel.isDuetActiveForTrack(viewModel.uiCurrentTrack)
 
     val lyricsLineBlur = lyricsLineBlurOverride ?: when {
         isFullScreen -> viewModel.lyricsFullScreenLineBlurEnabled
@@ -129,8 +129,8 @@ fun LyricsEnhanced(
         }
     }
 
-    val lyricsSessionKey = remember(viewModel.currentTrack?.id, lines.size) {
-        (viewModel.currentTrack?.id ?: "") to lines.map { it.startTime }
+    val lyricsSessionKey = remember(viewModel.uiCurrentTrack?.id, lines.size) {
+        (viewModel.uiCurrentTrack?.id ?: "") to lines.map { it.startTime }
     }
 
     val userAlignment = when {
@@ -151,12 +151,12 @@ fun LyricsEnhanced(
     }
     val listState = remember(lyricsSessionKey) { LazyListState() }
 
-    LaunchedEffect(viewModel.currentTrack?.id, lyricsSessionKey) {
+    LaunchedEffect(viewModel.uiCurrentTrack?.id, lyricsSessionKey) {
         playbackPositionMs.longValue = MusicManager.player.currentPosition.coerceAtLeast(0L)
     }
 
     // High-precision frame loop tracking smooth playback position with PLL drift correction
-    LaunchedEffect(viewModel.currentTrack?.id, lyricsSessionKey, viewModel.effectsState.speed) {
+    LaunchedEffect(viewModel.uiCurrentTrack?.id, lyricsSessionKey, viewModel.effectsState.speed) {
         var anchorPlayerPositionMs = MusicManager.player.currentPosition.coerceAtLeast(0L)
         var anchorFrameNanos = 0L
         while (isActive) {
@@ -164,10 +164,10 @@ fun LyricsEnhanced(
             val isPlaying = MusicManager.player.isPlaying
 
             val rawPosition = if (isSliderActive || !isPlaying) {
-                viewModel.currentPosition.coerceAtLeast(0L)
+                viewModel.uiCurrentPosition.coerceAtLeast(0L)
             } else {
                 val enginePos = MusicManager.player.currentPosition.coerceAtLeast(0L)
-                val modelPos = viewModel.currentPosition.coerceAtLeast(0L)
+                val modelPos = viewModel.uiCurrentPosition.coerceAtLeast(0L)
                 if (abs(enginePos - modelPos) > 1500L) {
                     modelPos
                 } else {
@@ -287,7 +287,7 @@ fun LyricsEnhanced(
                                 currentPosition = playbackSyncPosition,
                                 onLineClicked = { line ->
                                     val target = line.start.toLong() - viewModel.lyricsOffsetAtLyricTime(line.start.toLong())
-                                    if (viewModel.duration > 0L && target >= viewModel.duration) return@KaraokeLyricsView
+                                    if (viewModel.uiDuration > 0L && target >= viewModel.uiDuration) return@KaraokeLyricsView
                                     val finalTarget = target.coerceAtLeast(0L)
                                     playbackPositionMs.longValue = finalTarget
                                     viewModel.seekTo(finalTarget)
@@ -302,7 +302,7 @@ fun LyricsEnhanced(
                                 showTranslation = showTranslations,
                                 showPhonetic = showPhonetics,
                                 offset = lyricsViewportOffset,
-                                startsAtTop = true,
+                                startsAtTop = false,
                                 keepAliveZone = 72.dp,
                                 isScrubbing = viewModel.isScrubbing,
                                 lrcBounceEnabled = viewModel.lyricsLrcBounceEnabled,
@@ -513,7 +513,7 @@ fun buildSyncedLyrics(
                         // break anywhere, and a long right-aligned line ran off the left edge (issue #66).
                         isRightDuet && backing == null -> buildWrappingKaraokeSyllables(
                             content = cleanText,
-                            romanizedText = "",
+                            romanizedText = entry.romanization ?: "",
                             start = lineStart,
                             end = lineEnd,
                         )
@@ -592,11 +592,12 @@ private fun buildWrappingKaraokeSyllables(
         }
     }
 
+    val syllableEnd = (start + 1).coerceAtMost(end)
     return contentUnits.mapIndexed { index, unit ->
         KaraokeSyllable(
             content = unit,
             start = start,
-            end = end,
+            end = syllableEnd,
             phonetic = phoneticsByUnit[index]
         )
     }

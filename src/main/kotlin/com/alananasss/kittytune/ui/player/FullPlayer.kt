@@ -65,6 +65,7 @@ import com.alananasss.kittytune.ui.player.lyrics.SearchLyricsDialog
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Pause
 import com.alananasss.kittytune.ui.main.seekWheel
+import com.alananasss.kittytune.ui.main.volumeWheel
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
@@ -146,7 +147,7 @@ import com.alananasss.kittytune.ui.utils.fadingEdge
 @Composable
 fun FullPlayerScreen(viewModel: PlayerViewModel, onExitFullScreen: () -> Unit) {
     com.alananasss.kittytune.ui.debug.TraceRecompositions("FullPlayer")
-    val track = viewModel.currentTrack
+    val track = viewModel.uiCurrentTrack
     var showText by remember { mutableStateOf(true) }
     var showQuickSettings by remember { mutableStateOf(false) }
     var lastActivityMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -256,7 +257,7 @@ fun FullPlayerScreen(viewModel: PlayerViewModel, onExitFullScreen: () -> Unit) {
             palette = palette,
             drift = { drift.value },
             artworkUrl = track.fullResArtwork,
-            animatedVideoUrl = viewModel.currentAnimatedCoverTallUrl ?: viewModel.currentAnimatedCoverUrl,
+            animatedVideoUrl = viewModel.currentAnimatedCoverTallUrl ?: viewModel.uiCurrentAnimatedCoverUrl,
             fadeUiEnabled = viewModel.playerPrefs.getAnimatedCoversFadeUiEnabled()
         )
 
@@ -531,7 +532,7 @@ private fun CentredLyricsLayout(
     showText: Boolean,
     onToggleText: () -> Unit,
 ) {
-    val track = viewModel.currentTrack ?: return
+    val track = viewModel.uiCurrentTrack ?: return
     AnimatedContent(
         targetState = showText && viewModel.hasLyrics,
         transitionSpec = {
@@ -636,7 +637,7 @@ private fun CurrentLyricLine(viewModel: PlayerViewModel, palette: FullPlayerPale
             val lines = viewModel.lyricsLines
             lines.getOrNull(
                 com.alananasss.kittytune.ui.player.lyrics.LyricsUtils.activeLineIndex(
-                    lines, viewModel.currentPosition + viewModel.lyricsOffset
+                    lines, viewModel.uiCurrentPosition + viewModel.lyricsOffset
                 )
             )?.text.orEmpty()
         }
@@ -1073,7 +1074,7 @@ private fun CoverColumn(
     /** The line being sung, between the sleeve and the credit — the single-line layout. */
     showCurrentLine: Boolean = false,
 ) {
-    val track = viewModel.currentTrack ?: return
+    val track = viewModel.uiCurrentTrack ?: return
 
     BoxWithConstraints {
         // The cap rises as the words leave, and incorporates user cover zoom factor
@@ -1096,8 +1097,8 @@ private fun CoverColumn(
             val coverShape = RoundedCornerShape(14.dp)
             AnimatedArtwork(
                 artworkUrl = track.fullResArtwork,
-                animatedCoverUrl = viewModel.currentAnimatedCoverUrl,
-                isPlaying = viewModel.isPlaying,
+                animatedCoverUrl = viewModel.uiCurrentAnimatedCoverUrl,
+                isPlaying = viewModel.uiIsPlaying,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -1195,7 +1196,7 @@ private val COVER_MAX_ALONE = 620.dp
  */
 @Composable
 private fun TrackCredit(viewModel: PlayerViewModel, palette: FullPlayerPalette) {
-    val track = viewModel.currentTrack ?: return
+    val track = viewModel.uiCurrentTrack ?: return
     val align = viewModel.fullPlayerInfoAlign
     // Centred text lets the heart go either side; at an edge it takes the other one (issue #66).
     val heartAtStart = when (align) {
@@ -1218,13 +1219,13 @@ private fun TrackCredit(viewModel: PlayerViewModel, palette: FullPlayerPalette) 
     val buttons: @Composable () -> Unit = {
         Row(verticalAlignment = Alignment.CenterVertically) {
             QuietButton(
-                icon = if (viewModel.isLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                icon = if (viewModel.uiIsLiked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                 label = str("player_like"),
-                tint = if (viewModel.isLiked) MaterialTheme.colorScheme.primary else palette.dim,
+                tint = if (viewModel.uiIsLiked) MaterialTheme.colorScheme.primary else palette.dim,
                 size = 22.dp,
                 onClick = { viewModel.toggleLike() },
             )
-            if (viewModel.isYourMixActive) {
+            if (viewModel.uiIsYourMixActive) {
                 QuietButton(
                     icon = Icons.Rounded.ThumbDown,
                     label = str("mix_dislike"),
@@ -1255,13 +1256,21 @@ private fun TrackCredit(viewModel: PlayerViewModel, palette: FullPlayerPalette) 
                 if (viewModel.fullPlayerSourceIndicatorEnabled) {
                     com.alananasss.kittytune.ui.common.TrackSourceInlineDot(
                         track = track,
-                        resolvedSource = viewModel.currentStreamSource,
+                        resolvedSource = viewModel.uiCurrentStreamSource,
                         dotColor = palette.bright.copy(alpha = 0.6f),
                         iconTint = Color.Unspecified,
                         iconSize = 14.dp,
                         modifier = Modifier.padding(start = 6.dp)
                     )
                 }
+                // ArtifactNet AI-detection badge (issue #41)
+                val aiResult by com.alananasss.kittytune.audio.ai.AiDetectionManager.result.collectAsState()
+                com.alananasss.kittytune.ui.player.ai.AiDetectionBadge(
+                    result = aiResult.takeUnless { viewModel.isRemotePlayback },
+                    textColor = palette.bright,
+                    onClick = { viewModel.showAiDetectionSheet = true },
+                    modifier = Modifier.padding(start = 6.dp),
+                )
             }
             androidx.compose.material3.Text(
                 // Artist and album on one line, separated by an em dash, which is how the reference reads and
@@ -1323,7 +1332,7 @@ private fun FullPlayerControls(
 ) {
     Column(Modifier.fillMaxWidth()) {
         com.alananasss.kittytune.ui.player.automix.AutomixDebugOverlay(
-            currentPositionMs = { viewModel.currentPosition },
+            currentPositionMs = { viewModel.uiCurrentPosition },
             modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp)
         )
 
@@ -1341,7 +1350,7 @@ private fun FullPlayerControls(
                 label = str("btn_more"),
                 // Lit while its menu is open, like the lyrics button while the words show.
                 tint = if (viewModel.showMenuSheet) palette.bright else palette.dim,
-                onClick = { viewModel.currentTrack?.let { viewModel.showTrackOptions(it, fromPlayer = true) } },
+                onClick = { viewModel.uiCurrentTrack?.let { viewModel.showTrackOptions(it, fromPlayer = true) } },
                 modifier = Modifier.align(Alignment.CenterStart).offset(x = -QUIET_BUTTON_INSET),
             )
             Row(
@@ -1356,7 +1365,7 @@ private fun FullPlayerControls(
                     onClick = { viewModel.smartPrevious() },
                 )
                 QuietButton(
-                    icon = if (viewModel.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                    icon = if (viewModel.uiIsPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                     label = str("player_play_pause"),
                     tint = palette.bright,
                     size = 34.dp,
@@ -1398,34 +1407,18 @@ private fun FullPlayerVolumeBar(
     viewModel: PlayerViewModel,
     palette: FullPlayerPalette,
 ) {
-    val volume = viewModel.volume.coerceIn(0f, 1f)
+    val volume = viewModel.uiVolume.coerceIn(0f, 1f)
     val isMuted = volume <= 0.001f
-    // The wheel moves a target and the level glides to it, so a notch is a short slide and not a step of five per cent.
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val glide = remember { androidx.compose.animation.core.Animatable(0f) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val scrollDelta = event.changes.firstOrNull()?.scrollDelta?.y ?: 0f
-                        if (scrollDelta != 0f) {
-                            val base = if (glide.isRunning) glide.targetValue else viewModel.volume
-                            val next = (base - scrollDelta * 0.04f).coerceIn(0f, 1f)
-                            scope.launch {
-                                if (!glide.isRunning) glide.snapTo(viewModel.volume)
-                                glide.animateTo(
-                                    next,
-                                    androidx.compose.animation.core.spring(dampingRatio = androidx.compose.animation.core.Spring.DampingRatioNoBouncy, stiffness = 420f, visibilityThreshold = 0.002f),
-                                ) { viewModel.updateVolume(value) }
-                                viewModel.persistVolumeSoon()
-                            }
-                        }
-                    }
-                }
-            },
+            .volumeWheel(
+                currentVolume = { viewModel.uiVolume },
+                onVolumeChange = {
+                    viewModel.updateVolume(it)
+                    viewModel.persistVolumeSoon()
+                },
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         com.alananasss.kittytune.ui.main.OutputDevicePicker(onSelect = { viewModel.changeOutputDevice(it) }) { pickerModifier ->
@@ -1440,7 +1433,7 @@ private fun FullPlayerVolumeBar(
         }
         com.alananasss.kittytune.ui.main.StyledVolumeTrack(
             volume = volume,
-            isPlaying = viewModel.isPlaying,
+            isPlaying = viewModel.uiIsPlaying,
             activeColor = palette.bright,
             inactiveColor = palette.dim.copy(alpha = 0.25f),
             thumbColor = palette.bright,
@@ -1512,10 +1505,10 @@ private fun QuietButton(
 @Composable
 private fun FullPlayerSeekBar(viewModel: PlayerViewModel, palette: FullPlayerPalette) {
     // A trailer's song is shown as its window; see PlaybackProgressRow in the player bar.
-    val clip = viewModel.clipWindow
+    val clip = viewModel.uiClipWindow
     val shownOf = { songMs: Long -> clip?.toShown(songMs) ?: songMs }
     val songOf = { shownMs: Long -> clip?.toSong(shownMs) ?: shownMs }
-    val duration = (clip?.lengthMs ?: viewModel.duration).coerceAtLeast(1L)
+    val duration = (clip?.lengthMs ?: viewModel.uiDuration).coerceAtLeast(1L)
     val sliderStyle = com.alananasss.kittytune.ui.main.rememberPlayerSliderStyle()
     val seekWheelSeconds = com.alananasss.kittytune.ui.main.rememberSeekWheelSeconds()
     var scrubbing by remember { mutableStateOf(false) }
@@ -1526,7 +1519,7 @@ private fun FullPlayerSeekBar(viewModel: PlayerViewModel, palette: FullPlayerPal
     val wheel = com.alananasss.kittytune.ui.main.rememberWheelSeek(
         drawnMs = { drawnMs },
         reportedMs = { playheadMs },
-        durationMs = { clip?.lengthMs ?: viewModel.duration },
+        durationMs = { clip?.lengthMs ?: viewModel.uiDuration },
         stepSeconds = { seekWheelSeconds },
         commit = { target -> viewModel.seekTo(songOf(target)) },
     )
@@ -1534,10 +1527,10 @@ private fun FullPlayerSeekBar(viewModel: PlayerViewModel, palette: FullPlayerPal
     val isScrubbingNow = scrubbing || viewModel.isScrubbing || wheel.isActive
 
     val playhead by com.alananasss.kittytune.ui.player.slider.rememberSmoothPlayhead(
-        reportedMs = shownOf(viewModel.currentPosition),
-        isRunning = viewModel.isPlaying && !viewModel.isLoading,
-        followsInput = scrubbing || viewModel.isScrubbing,
-        trackKey = viewModel.currentTrack?.id,
+        reportedMs = shownOf(viewModel.uiCurrentPosition),
+        isRunning = viewModel.uiIsPlaying && !viewModel.uiIsLoading,
+        followsInput = isScrubbingNow,
+        trackKey = viewModel.uiCurrentTrack?.id,
     )
     playheadMs = playhead
     val position = when {
@@ -1550,7 +1543,7 @@ private fun FullPlayerSeekBar(viewModel: PlayerViewModel, palette: FullPlayerPal
     // A mix shows on the bar itself, as in the player bar; see MixTransition.
     val mix = com.alananasss.kittytune.ui.player.slider.rememberMixTransition()
     val shownFraction = if (isScrubbingNow) (played.toFloat() / duration).also { mix.noteShown(it) }
-    else mix.shownFraction(played.toFloat() / duration, viewModel.currentTrack?.id)
+    else mix.shownFraction(played.toFloat() / duration, viewModel.uiCurrentTrack?.id)
 
     Column(Modifier.fillMaxWidth()) {
         com.alananasss.kittytune.ui.player.slider.PlayerSlider(
@@ -1566,7 +1559,7 @@ private fun FullPlayerSeekBar(viewModel: PlayerViewModel, palette: FullPlayerPal
                 scrubbing = false
             },
             sliderStyle = sliderStyle,
-            isPlaying = viewModel.isPlaying,
+            isPlaying = viewModel.uiIsPlaying,
             valueRange = 0f..duration.toFloat(),
             mix = mix,
             mixColor = palette.bright,

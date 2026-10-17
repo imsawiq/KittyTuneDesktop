@@ -78,6 +78,12 @@ object AudioCache {
         dir.listFiles()?.forEach { it.delete() }
     }
 
+    fun evict(trackId: Long) {
+        dir.listFiles { f -> f.nameWithoutExtension == trackId.toString() }?.forEach {
+            runCatching { it.delete() }
+        }
+    }
+
     private suspend fun store(track: Track) {
         if (lookup(track.id) != null) return
         if (DownloadManager.getLocalTrack(track.id)?.localAudioPath?.let { File(it).exists() } == true) return
@@ -86,6 +92,10 @@ object AudioCache {
         val stream = StreamResolver.resolveStreamWithDrm(track, forDownload = true) ?: return
         // Encrypted streams cannot be kept; a local path is already on disk.
         if (stream.isDrmProtected || !stream.url.startsWith("http")) return
+        if (StreamResolver.isRestricted(track) && (stream.source == "soundcloud" || stream.source.isNullOrEmpty())) {
+            Logger.w("AudioCache", "Refusing to store SoundCloud snippet in audio cache for restricted track ${track.id}")
+            return
+        }
 
         val isHls = stream.url.contains(".m3u8") || stream.url.contains("hls")
         val ext = if (isHls || stream.url.contains("googlevideo.com")) "m4a" else "mp3"
@@ -96,14 +106,25 @@ object AudioCache {
             } else {
                 FileOutputStream(partial).use { out -> DownloadManager.downloadFileToStream(stream.url, out) {} }
             }
-            if (partial.length() > 0 && partial.renameTo(File(dir, "${track.id}.$ext"))) trim()
+            if (partial.length() > 0) {
+                // renameTo returns false on Windows when the target exists, which skipped trim()
+                // and left the track forever uncached; the atomic replace works in both cases.
+                com.alananasss.kittytune.core.AtomicFiles.replace(partial, File(dir, "${track.id}.$ext"))
+                trim()
+            }
         } finally {
             partial.delete()
         }
     }
 
-    /** Drops the least recently played tracks until the cache fits in [maxBytes]. */
-    private fun trim() {
+    /**
+     * Drops the least recently played tracks until the cache fits in [maxBytes].
+     *
+     * Internal so the bootstrap's startup sweep can call it after wiping leftovers — the
+     * cache can have drifted over its bound while the app was closed and a fresh launch is
+     * the cheapest moment to pull it back (issue #5-DB).
+     */
+    internal fun trim() {
         val files = dir.listFiles { f -> f.isFile && f.extension != "part" }?.sortedBy { it.lastModified() } ?: return
         var total = files.sumOf { it.length() }
         for (file in files) {

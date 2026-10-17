@@ -39,6 +39,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -100,6 +102,86 @@ data class UnifiedLyricResult(
 )
 
 class PlayerViewModel(application: Application) : AndroidViewModel(application), com.alananasss.kittytune.data.together.TogetherPlayer {
+    // configure() captures state synchronously in init, including a restored nonempty queue.
+    private val connectQueueWindow = com.alananasss.kittytune.data.sync.ConnectQueueWindow()
+
+    private var remotePeer by mutableStateOf<ConnectPeerState?>(null)
+    private var remoteDeviceId by mutableStateOf<String?>(null)
+    private var remotePosition by mutableLongStateOf(0L)
+    private var remoteTrackLiked by mutableStateOf(false)
+    private var remoteTicker: Job? = null
+    private var remoteVolumeJob: Job? = null
+    private var applyingConnectCommand = false
+    private val connectCommandMutex = kotlinx.coroutines.sync.Mutex()
+    val isRemotePlayback: Boolean get() = remoteDeviceId != null
+    val uiIsLoading: Boolean get() = !isRemotePlayback && isLoading
+    val uiClipWindow get() = clipWindow.takeUnless { isRemotePlayback }
+    val uiCurrentAnimatedCoverUrl get() = currentAnimatedCoverUrl.takeUnless { isRemotePlayback }
+    val uiCurrentStreamSource get() = if (isRemotePlayback) uiCurrentTrack?.source.orEmpty() else currentStreamSource
+    val uiIsYourMixActive: Boolean get() = !isRemotePlayback && isYourMixActive
+    val uiCurrentContext get() = currentContext.takeUnless { isRemotePlayback }
+    val playbackDeviceLabel: String?
+        get() = remoteDeviceId?.let { id ->
+            val peer = remotePeer
+            val name = peer?.name ?: com.alananasss.kittytune.data.sync.SyncPeers.find(id)?.label.orEmpty()
+            val ru = com.alananasss.kittytune.core.Strings.resolvedLanguage == "ru"
+            if (peer?.connected == true) (if (ru) "Играет на " else "Playing on ") + name
+            else name + if (ru) " · Не в сети" else " · Offline"
+        }
+    val uiIsLiked: Boolean get() = if (isRemotePlayback) remoteTrackLiked else isLiked
+    val uiCurrentTrack: Track?
+        get() = if (isRemotePlayback) remotePeer?.snapshot?.let { it.queue.getOrNull(it.currentIndex) } else currentTrack
+    val uiIsPlaying: Boolean
+        get() = if (isRemotePlayback) remotePeer?.connected == true && remotePeer?.snapshot?.isPlaying == true else isPlaying
+    val uiDuration: Long
+        get() = if (isRemotePlayback) uiCurrentTrack?.durationMs ?: 0L else duration
+    val uiCurrentPosition: Long
+        get() = if (isRemotePlayback) remotePosition else currentPosition
+    val uiQueueState: List<Track>
+        get() = if (isRemotePlayback) remotePeer?.snapshot?.queue.orEmpty() else queueState
+    val uiCurrentQueueIndex: Int
+        get() = if (isRemotePlayback) remotePeer?.snapshot?.currentIndex ?: -1 else currentQueueIndex
+    val uiShuffleEnabled: Boolean
+        get() = if (isRemotePlayback) remotePeer?.snapshot?.shuffleEnabled == true else shuffleEnabled
+    val uiRepeatMode: RepeatMode
+        get() = if (isRemotePlayback) remotePeer?.snapshot?.repeatMode?.let {
+            runCatching { RepeatMode.valueOf(it) }.getOrDefault(RepeatMode.NONE)
+        } ?: RepeatMode.NONE else repeatMode
+
+    private fun routeRemote(action: String, value: Long = 0, value2: Long = 0): Boolean {
+        if (applyingConnectCommand || applyingTogether) return false
+        val id = ConnectManager.selectedDevice.value ?: return false
+        ConnectManager.command(id, action, value, value2 = value2)
+        return true
+    }
+
+    private fun observeConnectPlayer() {
+        viewModelScope.launch {
+            ConnectManager.feedback.collect { message ->
+                if (message.isNotBlank() && message != "✓") _uiEvent.emit(message)
+            }
+        }
+        viewModelScope.launch {
+            combine(ConnectManager.peers, ConnectManager.selectedDevice, ConnectManager.visible) { peers, id, visible ->
+                Triple(id, id?.let(peers::get), visible)
+            }.collect { (id, peer, visible) ->
+                if (id != null && isPlaying) MusicManager.player.pause()
+                val previousTrackId = uiCurrentTrack?.id
+                remoteDeviceId = id
+                remotePeer = peer
+                val displayedTrack = uiCurrentTrack
+                remoteTrackLiked = displayedTrack?.let { LikeRepository.isTrackLiked(it.id) } == true
+                if (displayedTrack != null && displayedTrack.id != previousTrackId) loadLyrics(displayedTrack)
+                remotePosition = peer?.position() ?: 0L
+                remoteTicker?.cancel()
+                if (visible && peer?.connected == true && peer.snapshot?.isPlaying == true) {
+                    remoteTicker = viewModelScope.launch {
+                        while (isActive) { if (!isScrubbing) remotePosition = peer.position(); delay(250) }
+                    }
+                }
+            }
+        }
+    }
 
     private val gson = Gson()
     private val lyricsOverridesPrefs =
@@ -147,7 +229,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     var currentStreamSource by mutableStateOf<String?>(initialTrack?.source)
     var isPlaying by mutableStateOf(false)
     var isLoading by mutableStateOf(false)
-    var duration by mutableLongStateOf(initialTrack?.durationMs ?: 0L)
+    var duration by mutableLongStateOf(initialTrack?.effectiveFullDurationMs ?: initialTrack?.durationMs ?: 0L)
     var currentPosition by mutableLongStateOf(
         if (playerPrefs.getPersistentQueueEnabled() && playerPrefs.getSavePositionEnabled()) playerPrefs.getLastPosition() else 0L
     )
@@ -193,6 +275,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     val isAutomixing = com.alananasss.kittytune.audio.automix.AutomixManager.isAutomixing
     val mixBeatsLeft = com.alananasss.kittytune.audio.automix.AutomixManager.mixBeatsLeft
     private var isRestoringSession = true
+    private var syncPlaybackReady = false
+    private var lastAppliedRemotePlaybackAtMs = 0L
 
     private var playerInitialized = false
     val player: ExoPlayer
@@ -245,8 +329,18 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     private var volumeBeforeMute: Float = 1.0f
     private var volumePersistJob: Job? = null
 
+    val uiVolume: Float get() = if (isRemotePlayback) remotePeer?.snapshot?.volume ?: 1f else volume
     /** Sets the volume, ending any glide under way: a drag or the wheel takes over from where it got to. */
     fun updateVolume(v: Float) {
+        if (!applyingConnectCommand && ConnectManager.selectedDevice.value != null) {
+            val id = ConnectManager.selectedDevice.value!!
+            remoteVolumeJob?.cancel()
+            remoteVolumeJob = viewModelScope.launch {
+                delay(120)
+                ConnectManager.command(id, "volume", (v.coerceIn(0f, 1f) * 1000).toLong())
+            }
+            return
+        }
         volumeGlideJob?.cancel()
         applyVolume(v)
     }
@@ -255,11 +349,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         val newVol = if (v <= 0.001f) 0f else v.coerceIn(0f, 1f)
         volume = newVol
         MusicManager.setVolume(newVol)
+        ConnectManager.publish(connectSnapshot())
         mprisService?.updateVolume(newVol.toDouble())
     }
 
     /** Called when the user finishes a volume interaction; persists across restarts. */
     fun persistVolume() {
+        if (!applyingConnectCommand && ConnectManager.selectedDevice.value != null) return
         volumePersistJob?.cancel()
         volumePersistJob = null
         playerPrefs.saveVolume(volume)
@@ -270,6 +366,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
      * file, so writing once per wheel notch would stutter the UI.
      */
     fun persistVolumeSoon() {
+        if (!applyingConnectCommand && ConnectManager.selectedDevice.value != null) return
         volumePersistJob?.cancel()
         volumePersistJob = viewModelScope.launch {
             delay(400)
@@ -280,6 +377,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     private var volumeGlideJob: Job? = null
 
     fun toggleMute() {
+        if (routeRemote("volume", if (uiVolume > 0.001f) 0 else 1000)) return
         val target = if (volume > 0.001f) {
             volumeBeforeMute = volume
             0f
@@ -312,12 +410,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun volumeUp(delta: Float = 0.1f) {
-        updateVolume(volume + delta)
+        updateVolume(uiVolume + delta)
         persistVolume()
     }
 
     fun volumeDown(delta: Float = 0.1f) {
-        updateVolume(volume - delta)
+        updateVolume(uiVolume - delta)
         persistVolume()
     }
 
@@ -339,6 +437,159 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     private var menuContextQueueIndex: Int? = null
     var menuContextPlaylistId by mutableStateOf<Long?>(null)
     var isMenuContextFromPlayer by mutableStateOf(false)
+
+    // ─── Content filtering + AI detection (issue #41, ported from Android) ────
+
+    /** Desktop-adapted details dialog for the AI badge (Android: bottom sheet). */
+    var showAiDetectionSheet by mutableStateOf(false)
+
+    /** Undo bar shown after an AI auto-skip, with a session-whitelist Undo action. */
+    var showAiSkipUndoBar by mutableStateOf(false)
+
+    /**
+     * Bumps on every auto-skip so the undo bar's auto-dismiss timer restarts
+     * when a second skip lands while it is still visible.
+     */
+    var aiSkipUndoNonce by mutableIntStateOf(0)
+        private set
+    var aiSkippedTrack: Track? = null
+        private set
+    private var aiSkippedQueueIndex: Int = -1
+    private var aiSkippedWasBlocked: Boolean = false
+
+    /** Tracks the user restored via Undo: never auto-skip them again this session. */
+    val whitelistedAiTrackIds = mutableSetOf<Long>()
+
+    fun onAiTrackSkipped(track: Track, queueIndex: Int, wasBlocked: Boolean) {
+        aiSkippedTrack = track
+        aiSkippedQueueIndex = queueIndex
+        aiSkippedWasBlocked = wasBlocked
+        showAiSkipUndoBar = true
+        aiSkipUndoNonce++
+    }
+
+    fun undoAiSkip() {
+        val track = aiSkippedTrack ?: return
+        val queueIdx = aiSkippedQueueIndex
+        showAiSkipUndoBar = false
+        whitelistedAiTrackIds.add(track.id)
+        viewModelScope.launch {
+            if (aiSkippedWasBlocked) {
+                com.alananasss.kittytune.data.BlockManager.unblockTrack(track.id)
+            }
+            val existingIdx = _queue.indexOfFirst { it.id == track.id }
+            val targetIdx = if (existingIdx != -1) {
+                existingIdx
+            } else {
+                val insertAt = queueIdx.coerceIn(0, _queue.size)
+                _queue.add(insertAt, track)
+                val origInsertAt = queueIdx.coerceIn(0, _originalQueue.size)
+                _originalQueue.add(origInsertAt, track)
+                queueState = _queue.toList()
+                insertAt
+            }
+            skipToQueueItem(targetIdx)
+        }
+        aiSkippedTrack = null
+    }
+
+    fun hideAiSkipUndoBar() {
+        showAiSkipUndoBar = false
+        aiSkippedTrack = null
+    }
+
+    /**
+     * Content filtering wiring (issue #41, ported from Android).
+     *
+     * - A block that lands on the current track (manual or AI) skips forward and
+     *   purges the queue, so hidden content never plays and never reappears.
+     * - ArtifactNet verdicts drive auto-skip / auto-block when the user enabled them,
+     *   sparing liked tracks and session-whitelisted (Undo) tracks.
+     */
+    private fun initContentFiltering() {
+        com.alananasss.kittytune.data.BlockManager.init()
+
+        var lastSkipTime = 0L
+        fun safePlayNextOnBlock() {
+            val now = System.currentTimeMillis()
+            if (now - lastSkipTime < 800) return
+            lastSkipTime = now
+            playNext(manual = false, isCrossfade = false, ignoreRepeatOne = true)
+        }
+
+        // Auto-skip when the current track is blocked
+        com.alananasss.kittytune.data.BlockManager.onCurrentTrackBlocked = {
+            viewModelScope.launch(Dispatchers.Main) {
+                safePlayNextOnBlock()
+            }
+        }
+
+        com.alananasss.kittytune.data.BlockManager.onTrackBlocked = { blockedTrackId ->
+            viewModelScope.launch(Dispatchers.Main) {
+                if (currentTrack?.id == blockedTrackId) {
+                    safePlayNextOnBlock()
+                }
+                val removed = _queue.removeAll { it.id == blockedTrackId }
+                _originalQueue.removeAll { it.id == blockedTrackId }
+                if (removed) {
+                    currentQueueIndex = _queue.indexOfFirst { it.id == currentTrack?.id }
+                    queueState = _queue.toList()
+                }
+            }
+        }
+
+        com.alananasss.kittytune.data.BlockManager.onArtistBlocked = { blockedArtistId ->
+            viewModelScope.launch(Dispatchers.Main) {
+                if (currentTrack?.user?.id == blockedArtistId) {
+                    safePlayNextOnBlock()
+                }
+                val removed = _queue.removeAll { it.user?.id == blockedArtistId }
+                _originalQueue.removeAll { it.user?.id == blockedArtistId }
+                if (removed) {
+                    currentQueueIndex = _queue.indexOfFirst { it.id == currentTrack?.id }
+                    queueState = _queue.toList()
+                }
+            }
+        }
+
+        // Observe ArtifactNet results: auto-skip + block if user enabled it
+        viewModelScope.launch {
+            com.alananasss.kittytune.audio.ai.AiDetectionManager.result
+                .filterNotNull()
+                .filter { it.status == com.alananasss.kittytune.audio.ai.AiDetectionManager.Status.DONE }
+                .collect { result ->
+                    val isAi = result.score >= playerPrefs.aiScoreThreshold
+                    if (isAi && playerPrefs.aiAutoSkip) {
+                        val track = currentTrack ?: return@collect
+                        // Check if whitelisted for this session (e.g. user previously clicked Undo)
+                        if (whitelistedAiTrackIds.contains(track.id)) {
+                            return@collect
+                        }
+                        // Spare favorite / liked tracks (default true)
+                        if (playerPrefs.aiSpareFavorites &&
+                            (isLiked || com.alananasss.kittytune.data.LikeRepository.isTrackLiked(track.id))
+                        ) {
+                            return@collect
+                        }
+
+                        val skippedTrack = track
+                        val queueIdx = currentQueueIndex
+                        val wasBlocked = playerPrefs.aiAutoBlock
+                        if (wasBlocked) {
+                            com.alananasss.kittytune.data.BlockManager.blockTrack(
+                                skippedTrack,
+                                reason = com.alananasss.kittytune.data.BlockManager.REASON_AI_GENERATED,
+                                skipIfCurrent = true,
+                                currentlyPlayingId = skippedTrack.id,
+                            )
+                        } else {
+                            playNext(manual = false, isCrossfade = false, ignoreRepeatOne = true)
+                        }
+                        onAiTrackSkipped(skippedTrack, queueIdx, wasBlocked)
+                    }
+                }
+        }
+    }
 
     var showPlaylistMenuSheet by mutableStateOf(false)
     var playlistForMenu by mutableStateOf<Playlist?>(null)
@@ -914,7 +1165,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         private set
 
     /** The lyrics offset at the playhead: what to add to [currentPosition] to get the lyrics' time. */
-    val lyricsOffset: Long get() = lyricsSync.offsetAt(currentPosition)
+    val lyricsOffset: Long get() = lyricsSync.offsetAt(uiCurrentPosition)
 
     /** The offset that applies where the lyrics reach [lyricTimeMs], for seeking to a line. */
     fun lyricsOffsetAtLyricTime(lyricTimeMs: Long): Long =
@@ -1242,6 +1493,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     private var lastPlayerErrorTrackId: Long? = null
     private var mprisService: com.alananasss.kittytune.data.MprisService? = null
     private var windowsSmtcService: com.alananasss.kittytune.data.WindowsSmtcService? = null
+    private var macNowPlayingService: MacNowPlayingService? = null
 
     companion object {
         const val MY_WAVE_NAV_ID = "my_wave"
@@ -1367,6 +1619,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 SoundCloudTelemetryTracker.onTrackPaused(currentPosition)
             }
             updateDiscordPresence()
+            updateMprisMedia()
         }
 
 
@@ -1403,6 +1656,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
                 if (repeatMode == RepeatMode.ONE) {
                     currentPosition = 0L
+                    mprisService?.updatePosition(0L, emitSeeked = true)
                     MusicManager.player.seekTo(0)
                     MusicManager.player.play()
                 } else {
@@ -1508,6 +1762,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
             val trackId = parseIdFromMediaId(mediaItem.mediaId)
 
+            // Auto-skip when the incoming track is blocked (issue #41).
+            // ignoreRepeatOne guarantees forward progress under Repeat-One.
+            if (trackId != 0L && com.alananasss.kittytune.data.BlockManager.isTrackBlocked(trackId)) {
+                playNext(manual = false, ignoreRepeatOne = true)
+                return
+            }
+
             val expectedTrackId = _queue.getOrNull(currentQueueIndex)?.id
             if (expectedTrackId != null && expectedTrackId != trackId) {
                 return
@@ -1559,6 +1820,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && trackActuallyChanged) {
                 currentTrack?.let { loadLyrics(it) }
             }
+
+            if (trackActuallyChanged || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
+                currentTrack?.let { checkAndTriggerKaraokeSeparation(it) }
+            }
         }
     }
 
@@ -1590,6 +1855,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             val crossfadeEnabled = playerPrefs.getCrossfadeEnabled()
             playNext(manual = true, isCrossfade = crossfadeEnabled)
         }
+        initContentFiltering()
         MusicManager.onPreviousClick = {
             val crossfadeEnabled = playerPrefs.getCrossfadeEnabled()
             smartPrevious(isCrossfade = crossfadeEnabled)
@@ -1666,6 +1932,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 }
             } catch (_: Exception) {
             }
+
+            checkAndTriggerKaraokeSeparation(finalTrack)
         }
 
         viewModelScope.launch {
@@ -1737,6 +2005,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         } catch (_: Exception) {
         }
 
+        ConnectManager.configure(::connectSnapshot, ::handleConnectCommand)
+        observeConnectPlayer()
         restoreSession()
         syncWithCurrentPlayback()
 
@@ -1797,6 +2067,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                         saveStateAsync(saveQueue = false)
                     }
                 },
+                onRate = { speed ->
+                    setCustomSpeed(speed.toFloat())
+                },
             )
         }.onFailure { e -> println("MPRIS service init failed: ${e.message}") }.getOrNull()
     }
@@ -1818,10 +2091,28 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
+    private fun initMacNowPlayingService() {
+        if (macNowPlayingService == null && System.getProperty("os.name").lowercase().contains("mac")) {
+            try {
+                macNowPlayingService = MacNowPlayingService(
+                    onPlay = { play() },
+                    onPause = { pause() },
+                    onPlayPause = { togglePlayPause() },
+                    onNext = { playNext() },
+                    onPrevious = { smartPrevious() },
+                    onSeek = { seekTo(it) }
+                )
+            } catch (e: Exception) {
+                println("Mac Now Playing service init exception: ${e.message}")
+            }
+        }
+    }
+
     fun updateMprisMedia() {
         initMprisService()
         mprisService?.let { service ->
-            service.updateMedia(currentTrack, isPlaying, currentPosition)
+            service.updateRate(effectsState.speed.toDouble())
+            service.updateMedia(currentTrack, isPlaying, currentPosition, duration.takeIf { it > 0L })
             service.updateVolume(volume.toDouble())
             service.updateShuffle(shuffleEnabled)
             service.updateLoopStatus(repeatMode.toMprisLoopStatus())
@@ -1829,6 +2120,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
         initWindowsSmtcService()
         windowsSmtcService?.updateMedia(currentTrack, isPlaying, currentPosition, duration)
+
+        initMacNowPlayingService()
+        macNowPlayingService?.updateMedia(currentTrack, isPlaying, currentPosition, duration)
     }
 
     fun updateDiscordPresence() {
@@ -1859,6 +2153,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     override fun onCleared() {
+        remoteTicker?.cancel()
+        remoteVolumeJob?.cancel()
         super.onCleared()
         closeDiscordRpc()
         try {
@@ -1872,6 +2168,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         } catch (_: Exception) {
         }
         windowsSmtcService = null
+        macNowPlayingService?.close()
+        macNowPlayingService = null
 
         try {
             MusicManager.player.removeListener(playerListener)
@@ -1992,12 +2290,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     fun togglePreciseLyricsSearch(enabled: Boolean) {
         isPreciseLyricsSearchEnabled = enabled
         playerPrefs.setPreciseLyricsSearchEnabled(enabled)
-        currentTrack?.let { loadLyrics(it) }
+        uiCurrentTrack?.let { loadLyrics(it) }
     }
 
     fun openLyrics(targetTrack: Track? = null) {
-        val target = targetTrack ?: currentTrack ?: return
-        val isDifferentTrack = target.id != currentTrack?.id
+        val target = targetTrack ?: uiCurrentTrack ?: return
+        val isDifferentTrack = target.id != uiCurrentTrack?.id
         if (isDifferentTrack) playPlaylist(listOf(target), 0)
 
         lyricsMode = if (lyricsLines.isNotEmpty()) LyricsMode.SYNCED else LyricsMode.PLAIN
@@ -2119,7 +2417,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             val sync = com.alananasss.kittytune.data.LyricsOffsetRepository.get(track.id)
             withContext(Dispatchers.Main) {
                 // Only if we are still on the track that asked.
-                if (currentTrack?.id == track.id) {
+                if (uiCurrentTrack?.id == track.id) {
                     trackAutoScrollSpeed = speed
                     lyricsSync = sync
                 }
@@ -2213,7 +2511,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         lyricsLines.addAll(payload.lines)
         rawPlainLyrics = payload.plain
         currentLyricsSource = payload.provider.takeUnless { payload.isEmpty }
-        currentTrack?.let { refineLyricVoices(it) }
+        uiCurrentTrack?.let { refineLyricVoices(it) }
         lyricsMode = if (payload.lines.isNotEmpty()) LyricsMode.SYNCED else LyricsMode.PLAIN
         isLyricsLoading = false
     }
@@ -2235,7 +2533,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             val voices = lyricVoicesCache[track.id] ?: findLyricVoices(track, lines).also { lyricVoicesCache[track.id] = it }
             if (voices.size != lines.size) return@launch
             withContext(Dispatchers.Main) {
-                if (currentTrack?.id != track.id || lyricsLines.toList() != lines) return@withContext
+                if (uiCurrentTrack?.id != track.id || lyricsLines.toList() != lines) return@withContext
                 val voiced = lines.mapIndexed { i, line -> line.copy(singer = voices[i], agent = null) }
                 lyricsLines.clear()
                 lyricsLines.addAll(voiced)
@@ -2296,8 +2594,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
      * cancelling the current lookup should not throw away work already paid for.
      */
     private fun prefetchQueueLyrics() {
-        val next = _queue.getOrNull(currentQueueIndex + 1) ?: return
-        if (next.id == currentTrack?.id) return
+        val next = uiQueueState.getOrNull(uiCurrentQueueIndex + 1) ?: return
+        if (next.id == uiCurrentTrack?.id) return
         val variant = currentLyricsVariant()
         if (LyricsCache.get(next.id, variant.providerPreference, variant.translationLang, variant.romanized) != null) {
             return
@@ -2678,12 +2976,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun reloadLyrics() {
-        currentTrack?.let { loadLyrics(it) }
+        uiCurrentTrack?.let { loadLyrics(it) }
     }
 
     /** Nudges the offset here: the single one, or with two points the one nearer the playhead. */
     fun adjustLyricsOffset(amount: Long) {
-        updateLyricsSync(lyricsSync.adjustedAt(currentPosition, amount))
+        updateLyricsSync(lyricsSync.adjustedAt(uiCurrentPosition, amount))
     }
 
     /** Edits either end of the song without seeking or changing the visible lyric. */
@@ -2706,7 +3004,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
     /** Puts the first sync point at the playhead, keeping the offset the lyrics have there. */
     fun pinLyricsSyncStart() {
-        updateLyricsSync(lyricsSync.withStartAt(currentPosition))
+        updateLyricsSync(lyricsSync.withStartAt(uiCurrentPosition))
     }
 
     /**
@@ -2714,26 +3012,26 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
      * first one or the two would make the lyrics drift implausibly fast.
      */
     fun pinLyricsSyncEnd(): Boolean {
-        val pinned = lyricsSync.withEndAt(currentPosition) ?: return false
+        val pinned = lyricsSync.withEndAt(uiCurrentPosition) ?: return false
         updateLyricsSync(pinned)
         return true
     }
 
     /** Back to a single offset, the one the lyrics have at the playhead. */
     fun clearLyricsSyncEnd() {
-        updateLyricsSync(lyricsSync.singleAt(currentPosition))
+        updateLyricsSync(lyricsSync.singleAt(uiCurrentPosition))
     }
 
     private fun updateLyricsSync(sync: com.alananasss.kittytune.data.LyricsSync) {
         lyricsSync = sync
-        val trackId = currentTrack?.id ?: return
+        val trackId = uiCurrentTrack?.id ?: return
         viewModelScope.launch(Dispatchers.IO) {
             com.alananasss.kittytune.data.LyricsOffsetRepository.put(trackId, sync)
         }
     }
 
     fun loadCustomLyrics(content: String) {
-        val track = currentTrack ?: return
+        val track = uiCurrentTrack ?: return
         if (content.isBlank()) return
         lyricsImportJob?.cancel()
         lyricsSelectionJob?.cancel()
@@ -2752,7 +3050,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             val result = withContext(Dispatchers.IO) {
                 ManualLyricsSearch.localResult(searchTrack, content)
             }
-            if (generation != lyricsChoiceGeneration || currentTrack?.id != track.id) return@launch
+            if (generation != lyricsChoiceGeneration || uiCurrentTrack?.id != track.id) return@launch
             if (result == null) {
                 isLyricsLoading = false
                 return@launch
@@ -2827,7 +3125,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     private fun startManualLyricsSearch(query: String, provider: String, onSettled: ((LyricsMatcher.Target) -> Unit)?) {
         manualSearchProvider = provider
         if (query.isBlank()) return
-        val track = currentTrack ?: return
+        val track = uiCurrentTrack ?: return
         manualLyricSearchJob?.cancel()
         val generation = ++manualSearchGeneration
         unifiedLyricSearchResults.clear()
@@ -2902,7 +3200,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         viewModelScope.launch {
             lyricsJob?.join()
             delay(BACKGROUND_LYRICS_SEARCH_DELAY_MS)
-            if (currentTrack?.id != track.id) return@launch
+            if (uiCurrentTrack?.id != track.id) return@launch
             if (lyricSearchTrackId == track.id && unifiedLyricSearchResults.isNotEmpty()) return@launch
             startManualLyricsSearch(query, ManualLyricsSearch.ALL) { target -> upgradeToSyncedLyrics(track, target) }
         }
@@ -2914,7 +3212,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
      * while LrcLib's line-timed copy sat at the top of the list made no sense (issue #66).
      */
     private fun upgradeToSyncedLyrics(track: Track, target: LyricsMatcher.Target) {
-        if (currentTrack?.id != track.id || lyricsMode == LyricsMode.SYNCED || isLyricsLoading) return
+        if (uiCurrentTrack?.id != track.id || lyricsMode == LyricsMode.SYNCED || isLyricsLoading) return
         if (getLyricsOverride(track.id) != null) return
         val best = unifiedLyricSearchResults.firstOrNull {
             (it.hasLineSync || it.hasWordSync) && ManualLyricsSearch.isConfidentMatch(it, target)
@@ -2931,9 +3229,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         lyricsJob?.cancel()
         lyricsPrefetchJob?.cancel()
         lyricsSelectionJob?.cancel()
-        val pickedTrack = currentTrack ?: return
+        val pickedTrack = uiCurrentTrack ?: return
         val pickedForTrackId = pickedTrack.id
-        val pickedDuration = pickedTrack.durationMs ?: duration
+        val pickedDuration = pickedTrack.durationMs ?: uiDuration
         isLyricsLoading = true
         lyricsSelectionJob = viewModelScope.launch(Dispatchers.IO) {
             var finalLines = emptyList<LyricLine>()
@@ -3002,13 +3300,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 }
             }
             withContext(Dispatchers.Main) {
-                if (currentTrack?.id != pickedForTrackId) return@withContext
+                if (uiCurrentTrack?.id != pickedForTrackId) return@withContext
                 if (finalLines.isNotEmpty()) {
                     lyricsLines.clear()
                     lyricsLines.addAll(finalLines)
                     rawPlainLyrics = finalPlain
                     lyricsMode = LyricsMode.SYNCED
-                    currentTrack?.let { refineLyricVoices(it) }
+                    uiCurrentTrack?.let { refineLyricVoices(it) }
                 } else if (!finalPlain.isNullOrBlank()) {
                     // Picked by hand, so shown, even over synced lyrics: keeping the synced ones on screen
                     // made a click on a plain LrcLib result look like it did nothing (issue #66).
@@ -3102,7 +3400,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                     isLocalDetailsMode = false
                     localFilePathForDetails = null
                     showMenuSheet = false
-                    showDetailsSheet = true
+                    showDetailsSheet = false
+                    navigateToTrackDetails(target.id)
 
                     if (target.source == "soundcloud" && target.id > 0 && (target.user?.id == 0L || target.playbackCount == 0)) {
                         try {
@@ -3704,35 +4003,57 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         maintainPlayerState: Boolean = false,
         /** False for a stream whose order is the point, like My Wave: shuffle mode leaves it as it is. */
         respectShuffle: Boolean = true,
+        autoPlay: Boolean = true,
     ) {
         if (tracks.isEmpty()) return
+        // Apply the current master's content filter before sending a remote queue as well.
+        val cleanTracks = com.alananasss.kittytune.data.BlockManager.filterBlocked(tracks)
+        if (cleanTracks.isEmpty()) return
+        val targetTrack = tracks.getOrNull(startIndex)
+        val effectiveStartIndex = cleanTracks.indexOfFirst { it.id == targetTrack?.id }
+            .takeIf { it != -1 } ?: (if (startIndex in cleanTracks.indices) startIndex else 0)
+        if (!applyingConnectCommand && !applyingTogether && autoPlay && ConnectManager.selectedDevice.value != null) {
+            val index = effectiveStartIndex
+            val start = if (cleanTracks.size > 500) (index - 250).coerceIn(0, cleanTracks.size - 500) else 0
+            val state = PlaybackSnapshot(SyncLog.deviceId, System.currentTimeMillis(), cleanTracks.drop(start).take(500),
+                index - start, pendingSeekPosition ?: 0L, true, false, uiRepeatMode.name)
+            ConnectManager.command(ConnectManager.selectedDevice.value!!, "transfer", state = state)
+            pendingSeekPosition = null
+            return
+        }
+
         // Playing something of one's own leaves the shared playlist; the others carry on without us.
         if (!applyingTogether && context?.navigationId?.startsWith(TOGETHER_NAV_PREFIX) != true) {
             com.alananasss.kittytune.data.together.Together.stopListening()
         }
+        SyncPlayback.claimLocal()
         if (!maintainPlayerState) {
             isPlayerExpanded = false
         }
         SoundCloudTelemetryTracker.onQueueReset()
         playedTrackIds = emptySet()
-        _originalQueue.clear(); _originalQueue.addAll(tracks)
+        _originalQueue.clear(); _originalQueue.addAll(cleanTracks)
         _queue.clear()
         this.currentContext = context
         MusicManager.updateContext(context)
 
-        val effectiveStartIndex = if (startIndex in tracks.indices) startIndex else 0
         val isHistoryContext = context?.navigationId == "history" || context?.navigationId?.startsWith("history") == true
 
         if (shuffleEnabled && respectShuffle) {
-            val clickedTrack = tracks[effectiveStartIndex]
+            val clickedTrack = cleanTracks[effectiveStartIndex]
             val rest =
-                tracks.filterIndexed { index, _ -> index != effectiveStartIndex }.shuffled()
+                cleanTracks.filterIndexed { index, _ -> index != effectiveStartIndex }.shuffled()
             _queue.add(clickedTrack)
             _queue.addAll(rest)
-            playTrackAtIndex(0, addToHistory = (context == null || isHistoryContext))
+            // Always record the track in history when the user explicitly plays it. The previous
+            // gate `(context == null || isHistoryContext)` prevented tracks from being recorded
+            // when played from any context (search, playlist, album) — only the context itself
+            // was recorded (line ~3956), leaving the "Listening History" tab empty. Station/yt_radio
+            // exclusion is already handled inside playTrackAtIndex (line ~4085).
+            playTrackAtIndex(0, addToHistory = true, autoPlay = autoPlay)
         } else {
-            _queue.addAll(tracks)
-            playTrackAtIndex(effectiveStartIndex, addToHistory = (context == null || isHistoryContext))
+            _queue.addAll(cleanTracks)
+            playTrackAtIndex(effectiveStartIndex, addToHistory = true, autoPlay = autoPlay)
         }
 
         updateQueueState(); saveStateAsync(saveQueue = true)
@@ -3766,12 +4087,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 title = cleanTitle,
                 artworkUrl = safeArtworkUrl,
                 calculatedArtworkUrl = null,
-                trackCount = tracks.size,
+                trackCount = cleanTracks.size,
                 user = playlistCreator,
                 tracks = null,
                 permalinkUrl = safePermalink
             )
-
             HistoryRepository.addToHistory(historyPlaylist, isStation, isProfile)
         }
     }
@@ -3796,6 +4116,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun skipToQueueItem(index: Int) {
+        if (routeRemote("queue", index.toLong())) return
         // In a shuffled queue the order is random anyway, so a picked track jumps in right after the current
         // one instead of the queue running on from wherever it happened to sit.
         val keepsUpcoming = isQueuePreserveUpcomingEnabled || shuffleEnabled
@@ -3812,6 +4133,14 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         if (index < 0 || index >= _queue.size) {
             currentContext = null; return
         }
+        val candidate = _queue[index]
+        if (com.alananasss.kittytune.data.BlockManager.isBlocked(candidate)) {
+            _queue.removeAt(index)
+            _originalQueue.removeAll { it.id == candidate.id }
+            queueState = _queue.toList()
+            playTrackAtIndex(index, addToHistory, isCrossfade, autoPlay)
+            return
+        }
         currentQueueIndex = index
         val trackToPlay = _queue[index]
 
@@ -3820,7 +4149,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             isPlaying = false
         }
 
-        isLoading = true; duration = trackToPlay.durationMs ?: 0L; currentPosition = 0L
+        isLoading = true; duration = trackToPlay.effectiveFullDurationMs ?: trackToPlay.durationMs ?: 0L; currentPosition = 0L
         beginListenSession(trackToPlay)
         // Alongside the session rather than anywhere else, so "played" means the same to the queue as
         // it does to the statistics.
@@ -3873,12 +4202,17 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             }
             currentTrack = finalTrack
             MusicManager.currentTrack = finalTrack
+            val effectiveDuration = finalTrack.effectiveFullDurationMs ?: finalTrack.durationMs ?: 0L
+            if (effectiveDuration > 0L && (duration == 0L || duration < effectiveDuration)) {
+                duration = effectiveDuration
+            }
             isLiked = LikeRepository.isTrackLiked(finalTrack.id)
             loadLyrics(finalTrack)
             loadSocialProof(finalTrack)
             saveStateAsync(saveQueue = false)
             // Hydration backfills title/artwork the queue entry lacked: re-announce it.
             updateMprisMedia()
+            checkAndTriggerKaraokeSeparation(finalTrack)
 
             SoundCloudTelemetryTracker.onTrackStarted(
                 track = finalTrack,
@@ -3897,6 +4231,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun playNext(manual: Boolean = true, isCrossfade: Boolean = playerPrefs.getCrossfadeEnabled(), ignoreRepeatOne: Boolean = false, autoPlay: Boolean = true) {
+        if (manual && routeRemote("next")) return
         if (isAutoplayRadioLoading) return
 
         if (manual && !applyingTogether && com.alananasss.kittytune.data.together.Together.active.value != null) {
@@ -4028,7 +4363,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             }
 
             if (radioTracks.isNotEmpty()) {
-                val newTracks = radioTracks.filter { track -> _queue.none { it.id == track.id } }
+                val newTracks = com.alananasss.kittytune.data.BlockManager.filterBlocked(
+                    radioTracks.filter { track -> _queue.none { it.id == track.id } },
+                )
 
                 _queue.addAll(newTracks)
                 _originalQueue.addAll(newTracks)
@@ -4052,7 +4389,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 if (newTrackIds.isNotEmpty()) {
                     val unorderedFullTracks = api.getTracksByIds(newTrackIds.joinToString(","))
                     val trackMap = unorderedFullTracks.associateBy { it.id }
-                    val orderedFullTracks = newTrackIds.mapNotNull { id -> trackMap[id] }
+                    val orderedFullTracks = com.alananasss.kittytune.data.BlockManager.filterBlocked(
+                        newTrackIds.mapNotNull { id -> trackMap[id] },
+                    )
                     _queue.addAll(orderedFullTracks); _originalQueue.addAll(orderedFullTracks); updateQueueState()
                 }
                 if (currentContext == null) {
@@ -4100,8 +4439,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             val rawTracks = radioPlaylist?.tracks
                 ?: com.alananasss.kittytune.data.spotify.SpotifyRepository.getRadioTracks(spotifyId)
 
-            val tracksToAdd = rawTracks.drop(1).map { it.toTrack() }
-                .filter { track -> _queue.none { it.id == track.id } }
+            val tracksToAdd = com.alananasss.kittytune.data.BlockManager.filterBlocked(
+                rawTracks.drop(1).map { it.toTrack() },
+            ).filter { track -> _queue.none { it.id == track.id } }
 
             if (tracksToAdd.isNotEmpty()) {
                 _queue.addAll(tracksToAdd)
@@ -4127,22 +4467,25 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun smartPrevious(isCrossfade: Boolean = playerPrefs.getCrossfadeEnabled(), autoPlay: Boolean = true) {
+        if (routeRemote("previous")) return
         if (!applyingTogether && com.alananasss.kittytune.data.together.Together.active.value != null) {
             com.alananasss.kittytune.data.together.Together.control(com.alananasss.kittytune.data.together.TogetherMessage.CONTROL_PREVIOUS, currentPosition)
         }
-        // "Previous" always means the track before this one; rewinding first made it take two presses
-        // (issue #66). Only the first track of the queue, with nothing before it, starts over.
+        // If more than 3 seconds have played, rewind to the start of the current track.
+        // Otherwise, skip to the previous track in the queue (or restart if at the beginning).
         val prev = currentQueueIndex - 1
-        if (prev < 0) {
+        if (currentPosition > 3000L || prev < 0) {
             flushListenSession("MANUAL_REPLAY")
             // The same track from the top is a new listen, not a continuation of the old one.
             beginListenSession(currentTrack)
             currentPosition = 0L
+            mprisService?.updatePosition(0L, emitSeeked = true)
             player.seekTo(0)
             if (autoPlay) {
                 player.play()
                 isPlaying = true
             }
+            currentTrack?.let { checkAndTriggerKaraokeSeparation(it) }
         } else {
             if (currentTrack != null) flushListenSession("SKIP_PREVIOUS")
             playTrackAtIndex(prev, addToHistory = false, isCrossfade = isCrossfade, autoPlay = autoPlay)
@@ -4167,10 +4510,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun play() {
+        if (routeRemote("play")) return
         if (!isPlaying) togglePlayPause()
     }
 
     fun pause() {
+        if (routeRemote("pause")) return
         if (isPlaying) togglePlayPause()
     }
 
@@ -4183,6 +4528,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun toggleShuffle() {
+        if (routeRemote("shuffle", if (uiShuffleEnabled) 0 else 1)) return
         shuffleEnabled = !shuffleEnabled;
         if (shuffleEnabled) applyShuffle() else revertShuffle();
         updateQueueState();
@@ -4222,6 +4568,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun toggleRepeatMode() {
+        if (routeRemote("repeat", when (uiRepeatMode) { RepeatMode.NONE -> 1; RepeatMode.ALL -> 2; RepeatMode.ONE -> 0 })) return
         repeatMode = when (repeatMode) {
             RepeatMode.NONE -> RepeatMode.ALL
             RepeatMode.ALL -> RepeatMode.ONE
@@ -4244,6 +4591,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun moveQueueItem(from: Int, to: Int) {
+        if (routeRemote("move", from.toLong(), to.toLong())) return
         if (from == to || from !in _queue.indices || to !in _queue.indices) return
 
         if (from < queueState.size && to < queueState.size) {
@@ -4283,6 +4631,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun removeTrackFromQueue(index: Int) {
+        if (routeRemote("remove", index.toLong())) return
         if (index !in _queue.indices) return
 
         val trackToRemove = _queue[index]
@@ -4336,9 +4685,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
     fun insertNext(tracks: List<Track>) {
         if (tracks.isEmpty()) return
+        val cleanTracks = com.alananasss.kittytune.data.BlockManager.filterBlocked(tracks)
+        if (cleanTracks.isEmpty()) return
         val insertIndex = currentQueueIndex + 1
 
-        val uniqueTracks = tracks.map { it.copy() }
+        val uniqueTracks = cleanTracks.map { it.copy() }
 
         _queue.addAll(insertIndex, uniqueTracks)
         _originalQueue.addAll(insertIndex, uniqueTracks)
@@ -4371,6 +4722,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun togglePlayPause() {
+        if (routeRemote(if (uiIsPlaying) "pause" else "play")) return
+        SyncPlayback.claimLocal()
         if (!applyingTogether && com.alananasss.kittytune.data.together.Together.active.value != null) {
             com.alananasss.kittytune.data.together.Together.control(
                 if (player.isPlaying) com.alananasss.kittytune.data.together.TogetherMessage.CONTROL_PAUSE
@@ -4406,6 +4759,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
      * from the very beginning" for anyone whose track came in without a duration (issue #33).
      */
     fun seekTo(position: Long) {
+        if (routeRemote("seek", position)) { isScrubbing = false; return }
+        SyncPlayback.claimLocal()
         if (!applyingTogether && com.alananasss.kittytune.data.together.Together.active.value != null) {
             com.alananasss.kittytune.data.together.Together.control(com.alananasss.kittytune.data.together.TogetherMessage.CONTROL_SEEK, position)
         }
@@ -4426,6 +4781,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             if (repeatMode == RepeatMode.ONE) {
                 currentPosition = 0L
                 player.seekTo(0)
+                mprisService?.updatePosition(0L, emitSeeked = true)
                 player.play()
             } else {
                 playNext(manual = false, isCrossfade = playerPrefs.getCrossfadeEnabled())
@@ -4438,10 +4794,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         player.seekTo(target)
         SoundCloudTelemetryTracker.onTrackSeeked(target)
         saveStateAsync(savePositionOnly = true)
+        mprisService?.updatePosition(target, emitSeeked = true)
         updateDiscordPresence()
     }
 
     fun toggleLike() {
+        if (isRemotePlayback) { uiCurrentTrack?.let { toggleTrackLike(it) }; return }
         val t = currentTrack ?: return
         isLiked = !isLiked
 
@@ -4534,7 +4892,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
     private fun appendToQueue(tracks: List<Track>) {
         val known = _queue.map { it.id }.toHashSet()
-        val fresh = tracks.filter { it.id !in known }
+        val fresh = com.alananasss.kittytune.data.BlockManager.filterBlocked(
+            tracks.filter { it.id !in known },
+        )
         _queue.addAll(fresh)
         _originalQueue.addAll(fresh)
         updateQueueState()
@@ -4547,6 +4907,10 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     // are not sent back out.
 
     private var applyingTogether = false
+
+    // Bumped by every incoming host State so a stale deferred action knows it was overtaken; see
+    // followHost's 600 ms pause for why that matters.
+    private var togetherFollowGeneration = 0
 
     /** How many "play next" requests have gone in after the song playing, so the next one goes after them. */
     private var togetherNextOffset = 0
@@ -4572,12 +4936,29 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     ) {
         applyingTogether = true
         try {
+            // Every State bumps this: a pending deferred pause from an older State is overtaken by
+            // any newer one, whether it pauses (l.4674 applies it immediately) or resumes (the
+            // stale pause must not fire after it).
+            val generation = ++togetherFollowGeneration
             if (playerPrefs.getAutomixEnabled() != automix) playerPrefs.setAutomixEnabled(automix)
             if (currentTrack?.id != track.id) {
                 pendingSeekPosition = positionMs
                 val tracks = listOf(track) + upcoming.orEmpty().filter { it.id != track.id }
                 playPlaylist(tracks.map { it.toTrack() }, 0, togetherContext(), maintainPlayerState = true, respectShuffle = false)
-                if (!isPlaying) viewModelScope.launch { delay(600); applyingTogether = true; pause(); applyingTogether = false }
+                // The 600 ms grace lets playPlaylist spin up before pausing into the host's state.
+                // It must not outlive a newer State: a host that resumed within the window had its
+                // older "paused" State still pause the follower afterwards, contradicting the
+                // fresher one — so the deferred pause only fires when no newer State has arrived.
+                if (!isPlaying) {
+                    viewModelScope.launch {
+                        delay(600)
+                        if (generation == togetherFollowGeneration) {
+                            applyingTogether = true
+                            pause()
+                            applyingTogether = false
+                        }
+                    }
+                }
                 return
             }
             if (kotlin.math.abs(currentPosition - positionMs) > TOGETHER_MAX_DRIFT_MS) seekTo(positionMs)
@@ -4881,10 +5262,111 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     fun toggleVintageMp3() { val n = !effectsState.isVintageMp3Enabled; effectsState = effectsState.copy(isVintageMp3Enabled = n); applyEffectsAndSave() }
     fun setVintageMp3Compression(v: Float) { effectsState = effectsState.copy(vintageMp3Compression = v.coerceIn(0f, 1f)); applyEffectsAndSave() }
 
-    fun toggleVocalRemover() { val n = !effectsState.isVocalRemoverEnabled; effectsState = effectsState.copy(isVocalRemoverEnabled = n); applyEffectsAndSave() }
+    fun toggleVocalRemover() {
+        val n = !effectsState.isVocalRemoverEnabled
+        effectsState = effectsState.copy(isVocalRemoverEnabled = n)
+        applyEffectsAndSave()
+        if (n) {
+            val track = currentTrack
+            val prefs = PlayerPreferences()
+            if (track != null) {
+                if (com.alananasss.kittytune.audio.ai.karaoke.KaraokeManager.isModelReady()) {
+                    if (prefs.karaokeEngineMode != com.alananasss.kittytune.data.local.KaraokeEngineMode.MEL_BAND_ROFORMER) {
+                        prefs.karaokeEngineMode = com.alananasss.kittytune.data.local.KaraokeEngineMode.MEL_BAND_ROFORMER
+                    }
+                    if (com.alananasss.kittytune.audio.ai.karaoke.KaraokeManager.hasStem(track.id)) {
+                        com.alananasss.kittytune.core.Toaster.show(str("karaoke_stem_active_toast"))
+                    } else {
+                        com.alananasss.kittytune.core.Toaster.show(str("karaoke_processing_cool_toast"))
+                    }
+                }
+                checkAndTriggerKaraokeSeparation(track, force = true)
+            }
+        }
+    }
     fun setVocalRemoverLevel(v: Float) { effectsState = effectsState.copy(vocalRemoverLevel = v.coerceIn(0f, 1f)); applyEffectsAndSave() }
 
-    fun toggleVocalBoost() { val n = !effectsState.isVocalBoostEnabled; effectsState = effectsState.copy(isVocalBoostEnabled = n); applyEffectsAndSave() }
+    fun checkAndTriggerKaraokeSeparation(track: Track, force: Boolean = false, requireVocalStem: Boolean = false) {
+        val prefs = PlayerPreferences()
+        val isModelReady = com.alananasss.kittytune.audio.ai.karaoke.KaraokeManager.isModelReady()
+        val isVocalEffectActive = effectsState.isVocalRemoverEnabled || effectsState.isVocalBoostEnabled
+        val shouldTrigger = isModelReady &&
+            (force || isVocalEffectActive || prefs.karaokeAutoSeparateOnPlay)
+        val needVocals = requireVocalStem || effectsState.isVocalBoostEnabled
+        if (shouldTrigger) {
+            if (prefs.karaokeEngineMode != com.alananasss.kittytune.data.local.KaraokeEngineMode.MEL_BAND_ROFORMER) {
+                prefs.karaokeEngineMode = com.alananasss.kittytune.data.local.KaraokeEngineMode.MEL_BAND_ROFORMER
+            }
+            viewModelScope.launch(Dispatchers.IO) {
+                // 1. Check local cache and download first (instant, offline, zero latency)
+                var url: String? = com.alananasss.kittytune.data.cache.AudioCache.lookup(track.id)?.absolutePath
+                if (url == null) {
+                    url = com.alananasss.kittytune.data.DownloadManager.getLocalTrack(track.id)?.localAudioPath?.takeIf { java.io.File(it).exists() }
+                }
+                if (url == null) {
+                    val mediaItem = MusicManager.player.currentMediaItem
+                    url = mediaItem?.uri?.takeIf {
+                        it.startsWith("http://") || it.startsWith("https://") || it.startsWith("file:") || java.io.File(it).exists()
+                    }
+                }
+                if (url == null) {
+                    url = MusicManager.player.activeEngine.currentUrl?.takeIf {
+                        it.startsWith("http://") || it.startsWith("https://") || it.startsWith("file:") || java.io.File(it).exists()
+                    }
+                }
+                if (url == null) {
+                    url = com.alananasss.kittytune.data.StreamResolver.cachedStreamUrl(track.id)
+                        ?: com.alananasss.kittytune.data.StreamResolver.resolveStream(track)
+                }
+                if (!url.isNullOrEmpty()) {
+                    val headers = MusicManager.player.buildHeaders(track)
+                    com.alananasss.kittytune.audio.ai.karaoke.KaraokeManager.triggerAutoSeparationIfNeeded(
+                        track = track,
+                        audioSourceUrl = url,
+                        headers = headers,
+                        force = force,
+                        requireVocalStem = needVocals,
+                        onCompleted = { trackId ->
+                            MusicManager.onKaraokeStemReady(trackId)
+                            if (currentTrack?.id == trackId) {
+                                if (effectsState.isVocalRemoverEnabled) {
+                                    com.alananasss.kittytune.core.Toaster.show(str("karaoke_separation_complete_toast"))
+                                } else if (effectsState.isVocalBoostEnabled) {
+                                    com.alananasss.kittytune.core.Toaster.show(str("karaoke_stem_vocal_ready"))
+                                }
+                            }
+                        }
+                    )
+                } else {
+                    com.alananasss.kittytune.utils.Logger.w("PlayerViewModel", "checkAndTriggerKaraokeSeparation: could not resolve URL for track ${track.id}")
+                    com.alananasss.kittytune.audio.ai.karaoke.KaraokeManager.reportSeparationError(track.id, "Source audio inaccessible")
+                }
+            }
+        }
+    }
+
+    fun toggleVocalBoost() {
+        val n = !effectsState.isVocalBoostEnabled
+        effectsState = effectsState.copy(isVocalBoostEnabled = n)
+        applyEffectsAndSave()
+        if (n) {
+            val track = currentTrack
+            val prefs = PlayerPreferences()
+            if (track != null) {
+                if (com.alananasss.kittytune.audio.ai.karaoke.KaraokeManager.isModelReady()) {
+                    if (prefs.karaokeEngineMode != com.alananasss.kittytune.data.local.KaraokeEngineMode.MEL_BAND_ROFORMER) {
+                        prefs.karaokeEngineMode = com.alananasss.kittytune.data.local.KaraokeEngineMode.MEL_BAND_ROFORMER
+                    }
+                    if (com.alananasss.kittytune.audio.ai.karaoke.KaraokeManager.hasVocalStem(track.id)) {
+                        com.alananasss.kittytune.core.Toaster.show(str("karaoke_stem_vocal_ready"))
+                    } else {
+                        com.alananasss.kittytune.core.Toaster.show(str("karaoke_processing_cool_toast"))
+                    }
+                }
+                checkAndTriggerKaraokeSeparation(track, force = true, requireVocalStem = true)
+            }
+        }
+    }
     fun setVocalBoostIntensity(v: Float) { effectsState = effectsState.copy(vocalBoostIntensity = v.coerceIn(0f, 1f)); applyEffectsAndSave() }
 
     fun toggleFlanger() { val n = !effectsState.isFlangerEnabled; effectsState = effectsState.copy(isFlangerEnabled = n); applyEffectsAndSave() }
@@ -5015,7 +5497,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     private fun applyEffectsAndSave() {
-        MusicManager.applyEffects(effectsState); viewModelScope.launch(Dispatchers.IO) {
+        MusicManager.applyEffects(effectsState)
+        mprisService?.updateRate(effectsState.speed.toDouble())
+        viewModelScope.launch(Dispatchers.IO) {
             playerPrefs.saveEffects(
                 effectsState
             )
@@ -5091,7 +5575,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun toggleTrackLike(track: Track) {
-        if (track.id == currentTrack?.id) {
+        if (!isRemotePlayback && track.id == currentTrack?.id) {
             toggleLike()
         } else {
             val isCurrentlyLiked = LikeRepository.isTrackLiked(track.id)
@@ -5100,6 +5584,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             } else {
                 LikeRepository.addLike(track)
             }
+            if (track.id == uiCurrentTrack?.id) remoteTrackLiked = !isCurrentlyLiked
+            if (track.id == currentTrack?.id) isLiked = !isCurrentlyLiked
         }
     }
 
@@ -5115,9 +5601,17 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun addToQueue(tracks: List<Track>) {
-        if (tracks.isEmpty()) return
+        if (!applyingConnectCommand && ConnectManager.selectedDevice.value != null && tracks.isNotEmpty()) {
+            ConnectManager.command(ConnectManager.selectedDevice.value!!, "append", state = PlaybackSnapshot(
+                SyncLog.deviceId, System.currentTimeMillis(), tracks.take(500), 0, 0, false, false, "NONE"))
+            return
+        }
 
-        val uniqueTracks = tracks.map { it.copy() }
+        if (tracks.isEmpty()) return
+        val cleanTracks = com.alananasss.kittytune.data.BlockManager.filterBlocked(tracks)
+        if (cleanTracks.isEmpty()) return
+
+        val uniqueTracks = cleanTracks.map { it.copy() }
 
         _queue.addAll(uniqueTracks)
         _originalQueue.addAll(uniqueTracks)
@@ -5143,8 +5637,115 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         viewModelScope.launch { _uiEvent.emit(msg) }
     }
 
+    /** Captured on the UI thread; a live controller never overwrites the local player. */
+    private fun connectSnapshot(): PlaybackSnapshot? {
+        val window = connectQueueWindow.capture(queueState, currentQueueIndex) ?: return null
+        return PlaybackSnapshot(SyncLog.deviceId, System.currentTimeMillis(), window.queue,
+            window.index, currentPosition.coerceAtLeast(0L), isPlaying, shuffleEnabled, repeatMode.name, volume = volume)
+    }
+
+    private suspend fun handleConnectCommand(command: ConnectMessage) {
+        connectCommandMutex.lock()
+        try {
+        require(SyncPlayback.enabled) { "Playback sync is disabled" }
+        applyingConnectCommand = true
+        ConnectManager.activateLocalRenderer()
+        SyncPlayback.claimLocal()
+        when (command.action) {
+            "play" -> { if (!isPlaying) togglePlayPause() }
+            "pause" -> pause()
+            "next" -> playNext(manual = true)
+            "previous" -> smartPrevious()
+            "volume" -> { updateVolume(command.value.coerceIn(0, 1000) / 1000f); persistVolume() }
+            "seek" -> seekTo(command.value.coerceAtLeast(0L))
+            "shuffle" -> if (shuffleEnabled != (command.value == 1L)) toggleShuffle()
+            "repeat" -> {
+                val target = when (command.value) { 0L -> RepeatMode.NONE; 1L -> RepeatMode.ALL; 2L -> RepeatMode.ONE; else -> error("Invalid repeat mode") }
+                repeatMode = target
+                applyRepeatMode()
+            }
+            "queue", "remove" -> {
+                val state = connectSnapshot() ?: error("Queue is empty")
+                require(command.value in 0L until state.queue.size.toLong()) { "Invalid queue item" }
+                val start = if (queueState.size > 500) (currentQueueIndex - 250).coerceIn(0, queueState.size - 500) else 0
+                val index = command.value.toInt() + start
+                if (command.action == "queue") skipToQueueItem(index) else {
+                    require(index != currentQueueIndex) { "Cannot remove the playing track" }
+                    removeTrackFromQueue(index)
+                }
+            }
+            "move" -> {
+                val state = connectSnapshot() ?: error("Queue is empty")
+                require(command.value in 0L until state.queue.size.toLong() && command.value2 in 0L until state.queue.size.toLong())
+                val start = if (queueState.size > 500) (currentQueueIndex - 250).coerceIn(0, queueState.size - 500) else 0
+                moveQueueItem(command.value.toInt() + start, command.value2.toInt() + start)
+            }
+            "append" -> {
+                val tracks = command.state?.queue ?: error("No tracks")
+                require(tracks.size in 1..500 && tracks.none { it.source == "local" })
+                addToQueue(tracks)
+            }
+            "transfer" -> {
+                ConnectManager.selectDevice(null)
+                val remote = requireNotNull(command.state) { "No playback state" }
+                require(remote.queue.size in 1..500 && remote.currentIndex in remote.queue.indices) { "Invalid queue" }
+                require(remote.positionMs >= 0 && remote.repeatMode in listOf("NONE", "ALL", "ONE")) { "Invalid playback state" }
+                val track = remote.queue[remote.currentIndex]
+                require(track.source != "local") { "Local files are unavailable on another device" }
+                val portable = remote.queue.filter { it.source != "local" }
+                val index = remote.queue.subList(0, remote.currentIndex).count { it.source != "local" }
+                require(index >= 0)
+                shuffleEnabled = false
+                pendingSeekPosition = remote.positionMs
+                playPlaylist(portable, index, maintainPlayerState = true, autoPlay = remote.isPlaying)
+                currentPosition = remote.positionMs
+                shuffleEnabled = remote.shuffleEnabled
+                repeatMode = RepeatMode.valueOf(remote.repeatMode)
+                applyRepeatMode()
+                var preparationError: Throwable? = null
+                com.alananasss.kittytune.data.sync.awaitConnectPreparation(
+                    ready = { player.activeEngine.state == com.alananasss.kittytune.audio.AudioEngine.State.READY &&
+                        player.currentMediaItem?.mediaId?.removePrefix("yt_") == track.id.toString() },
+                    failure = { preparationError },
+                    observe = { changed ->
+                        val listener = object : Player.Listener {
+                            override fun onPlaybackStateChanged(playbackState: Int) = changed()
+                            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = changed()
+                            override fun onPlayerError(error: Throwable) { preparationError = error; changed() }
+                        }
+                        player.addListener(listener)
+                        val remove: () -> Unit = { player.removeListener(listener) }
+                        remove
+                    },
+                )
+                player.seekTo(remote.positionMs)
+                currentPosition = remote.positionMs
+            }
+            else -> error("Unknown player command")
+        }
+        saveStateAsync(saveQueue = true)
+        } finally {
+            applyingConnectCommand = false
+            connectCommandMutex.unlock()
+        }
+    }
+
     private fun saveStateAsync(saveQueue: Boolean = false, savePositionOnly: Boolean = false) {
         if (isRestoringSession) return
+        ConnectManager.publish(connectSnapshot())
+        if (syncPlaybackReady) {
+            val q = queueState
+            val index = q.indexOfFirst { it.id == currentTrack?.id }
+            if (index >= 0) {
+                val position = currentPosition
+                val playing = isPlaying
+                val shuffle = shuffleEnabled
+                val repeat = repeatMode.name
+                viewModelScope.launch(Dispatchers.IO) {
+                    SyncPlayback.publish(q, index, position, playing, shuffle, repeat)
+                }
+            }
+        }
         val t = currentTrack
         val p = currentPosition
         val c = currentContext
@@ -5257,6 +5858,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                         } else {
                             currentPosition = enginePos
                         }
+                        mprisService?.syncPosition(enginePos)
                         ensureListenSession()
                         listenSession?.onPosition(currentPosition)
 
@@ -5515,10 +6117,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     private fun restoreSession() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val savedQueue = playerPrefs.getLastQueueSnapshot()
+                val storedQueue = playerPrefs.getLastQueueSnapshot()
+                val savedQueue = com.alananasss.kittytune.data.local.PlaybackQueueSnapshot.capture(
+                    com.alananasss.kittytune.data.BlockManager.filterBlocked(storedQueue.tracks),
+                    com.alananasss.kittytune.data.BlockManager.filterBlocked(storedQueue.originalTracks()),
+                )
                 val lastQueue = savedQueue.tracks
                 val lastQueueIndex = playerPrefs.getLastQueueIndex()
-                val lastTrack = playerPrefs.getLastTrack()
+                val lastTrack = playerPrefs.getLastTrack()?.takeUnless {
+                    com.alananasss.kittytune.data.BlockManager.isBlocked(it)
+                }
                 val lastPosition = playerPrefs.getLastPosition()
                 val lastContext = playerPrefs.getLastContext()
                 val lastShuffle = playerPrefs.getLastShuffleEnabled()
@@ -5550,7 +6158,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                         )
                         if (currentPlayerMediaId == lastTrack.id.toString() && MusicManager.player.isPlaying) {
                             isPlaying = true
-                            duration = MusicManager.player.duration.coerceAtLeast(lastTrack.durationMs ?: 0L)
+                            duration = MusicManager.player.duration.coerceAtLeast(lastTrack.effectiveFullDurationMs ?: lastTrack.durationMs ?: 0L)
                             currentPosition = MusicManager.player.currentPosition
                             MusicManager.applyEffects(effectsState)
                             Logger.e(
@@ -5559,12 +6167,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                             )
                         } else {
                             currentPosition = lastPosition
-                            duration = lastTrack.durationMs ?: 0L
+                            duration = lastTrack.effectiveFullDurationMs ?: lastTrack.durationMs ?: 0L
                             Logger.e("PlayerViewModel", "calling playRobustly with startPosition = $lastPosition")
                             if (currentQueueIndex >= 0) {
                                 playRobustly(currentQueueIndex, autoPlay = false, startPosition = lastPosition)
                             }
                         }
+                        updateMprisMedia()
                         delay(200.milliseconds)
                     }
                     isRestoringSession = false
@@ -5572,6 +6181,50 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             } catch (_: Exception) {
                 withContext(Dispatchers.Main) { isRestoringSession = false }
             }
+            restoreSyncedPlayback()
+        }
+    }
+
+    /** Refresh when a backgrounded window becomes active again. */
+    fun refreshSyncedPlaybackOnForeground() {
+        if (!syncPlaybackReady || !SyncPlayback.enabled) return
+        viewModelScope.launch { restoreSyncedPlayback() }
+    }
+
+    /** An active local play always takes precedence over a remote restore. */
+    private suspend fun restoreSyncedPlayback() {
+        runCatching { SyncScheduler.syncAll("playback restore") }
+        withContext(Dispatchers.Main) {
+            val wasReady = syncPlaybackReady
+            var appliedRemote = false
+            val remote = SyncPlayback.current()?.takeIf {
+                it.deviceId != SyncLog.deviceId && it.updatedAtMs > lastAppliedRemotePlaybackAtMs
+            }
+            if (!isPlaying && !isRemotePlayback &&
+                com.alananasss.kittytune.data.together.Together.active.value == null && remote != null) {
+                val track = remote.queue.getOrNull(remote.currentIndex)
+                if (track != null && track.source != "local") {
+                    val portable = remote.queue.filter { it.source != "local" }
+                    val index = portable.indexOfFirst { it.id == track.id }
+                    if (index >= 0) {
+                        val shouldPlay = false // Live playback moves only through an explicit device selection.
+                        val position = if (shouldPlay) remote.projectedPosition(System.currentTimeMillis())
+                            else remote.positionMs
+                        shuffleEnabled = false // preserve the sender's exact queue order
+                        pendingSeekPosition = position
+                        playPlaylist(portable, index, autoPlay = shouldPlay)
+                        currentPosition = position
+                        appliedRemote = true
+                        lastAppliedRemotePlaybackAtMs = remote.updatedAtMs
+                        shuffleEnabled = remote.shuffleEnabled
+                        repeatMode = runCatching { RepeatMode.valueOf(remote.repeatMode) }
+                            .getOrDefault(RepeatMode.NONE)
+                        applyRepeatMode()
+                    }
+                }
+            }
+            syncPlaybackReady = true
+            if (!appliedRemote && !wasReady) saveStateAsync(saveQueue = true)
         }
     }
 
@@ -5590,7 +6243,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             }
 
             withContext(Dispatchers.IO) {
-                val snapshot = playerPrefs.getLastQueueSnapshot()
+                val storedQueue = playerPrefs.getLastQueueSnapshot()
+                val snapshot = com.alananasss.kittytune.data.local.PlaybackQueueSnapshot.capture(
+                    com.alananasss.kittytune.data.BlockManager.filterBlocked(storedQueue.tracks),
+                    com.alananasss.kittytune.data.BlockManager.filterBlocked(storedQueue.originalTracks()),
+                )
                 val savedQueue = snapshot.tracks
                 val savedQueueIndex = playerPrefs.getLastQueueIndex()
                 val savedContext = playerPrefs.getLastContext()
@@ -5715,7 +6372,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 val title = track.title?.trim().orEmpty()
                 val artist = track.displayArtist.ifBlank { track.user?.username.orEmpty() }.trim()
                 val album = track.publisherMetadata?.albumTitle ?: track.publisherMetadata?.releaseTitle
-                val durationSec = ((track.durationMs ?: 0L) / 1000L).toInt().takeIf { it > 0 }
+                val durationSec = (((track.effectiveFullDurationMs ?: track.durationMs) ?: 0L) / 1000L).toInt().takeIf { it > 0 }
                 val isrc = track.publisherMetadata?.isrc
 
                 val resolved = AnimatedCoverResolver.resolve(
@@ -5967,6 +6624,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         } else nextIndex
 
         val nextTrack = _queue[targetIndex]
+        if (com.alananasss.kittytune.data.BlockManager.isBlocked(nextTrack)) return
 
         viewModelScope.launch(Dispatchers.IO) {
             try {

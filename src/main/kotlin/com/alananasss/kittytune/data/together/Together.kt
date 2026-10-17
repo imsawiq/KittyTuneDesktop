@@ -123,6 +123,13 @@ object Together {
     private var player: TogetherPlayer? = null
     private var started = false
     private var tickJob: Job? = null
+
+    // queueVersion, lastSentQueueVersion and lastUpcomingIds are touched from the tick job, the
+    // relay's incoming-collect and publishStateSoon coroutines — three threads on the IO pool.
+    // The unguarded read-modify-write in publishQueue could interleave: two publishes could ship
+    // the same version for different queues, and a follower comparing them would miss a queue
+    // change (the audit's "queueVersion Together non synchronisé").
+    private val queueStateLock = Any()
     private var lastSentQueueVersion = -1
     private var queueVersion = 0
     private var lastUpcomingIds: List<Long> = emptyList()
@@ -305,26 +312,30 @@ object Together {
         val p = player ?: return
         val now = System.currentTimeMillis()
         val current = p.sharedCurrent()
+        val version = synchronized(queueStateLock) { queueVersion }
         updateRoom(code) { it.copy(hostId = memberId, hostSeenAt = now, nowPlaying = current, isPlaying = p.sharedIsPlaying(), automix = p.sharedAutomix()) }
-        send(code, TogetherMessage.State(memberId, now, current, p.sharedPositionMs(), p.sharedIsPlaying(), p.sharedAutomix(), queueVersion))
+        send(code, TogetherMessage.State(memberId, now, current, p.sharedPositionMs(), p.sharedIsPlaying(), p.sharedAutomix(), version))
     }
 
     private fun publishQueue(code: String, force: Boolean) {
         val p = player ?: return
         val upcoming = p.sharedUpcoming().take(MAX_SHARED_UPCOMING)
         val ids = upcoming.map { it.id }
-        if (!force && ids == lastUpcomingIds && lastSentQueueVersion == queueVersion) return
-        if (ids != lastUpcomingIds) queueVersion++
-        lastUpcomingIds = ids
-        lastSentQueueVersion = queueVersion
+        val version = synchronized(queueStateLock) {
+            if (!force && ids == lastUpcomingIds && lastSentQueueVersion == queueVersion) return
+            if (ids != lastUpcomingIds) queueVersion++
+            lastUpcomingIds = ids
+            lastSentQueueVersion = queueVersion
+            queueVersion
+        }
         val room = _rooms.value[code] ?: Room(code, "")
-        updateRoom(code) { it.copy(upcoming = upcoming, queueVersion = queueVersion) }
-        send(code, TogetherMessage.Queue(memberId, System.currentTimeMillis(), queueVersion, upcoming, room.playlist, room.name))
+        updateRoom(code) { it.copy(upcoming = upcoming, queueVersion = version) }
+        send(code, TogetherMessage.Queue(memberId, System.currentTimeMillis(), version, upcoming, room.playlist, room.name))
     }
 
     // ─── Incoming ─────────────────────────────────────────────────────────────────────────────
 
-    private suspend fun handle(code: String, message: TogetherMessage) {
+    internal suspend fun handle(code: String, message: TogetherMessage) {
         if (message.from == memberId) return
         val now = System.currentTimeMillis()
         when (message) {
@@ -399,7 +410,7 @@ object Together {
      * of the host's made every follower play ten seconds ahead of them. Only the excess over the quickest message seen
      * is real delay, since the quickest is as close to zero travel as the connection ever gets.
      */
-    private fun flightTime(host: String, arrivedMinusSent: Long): Long {
+    internal fun flightTime(host: String, arrivedMinusSent: Long): Long {
         val floor = synchronized(quickestTrip) {
             val known = quickestTrip[host]
             if (known == null || arrivedMinusSent < known) { quickestTrip[host] = arrivedMinusSent; arrivedMinusSent } else known
@@ -435,4 +446,32 @@ object Together {
     private fun loadSaved(): List<Saved> = runCatching {
         Prefs.getString(KEY_SAVED, null)?.let { gson.fromJson<List<Saved>>(it, object : TypeToken<List<Saved>>() {}.type) }
     }.getOrNull().orEmpty()
+
+    @androidx.annotation.VisibleForTesting
+    internal fun resetForTesting() {
+        _rooms.value = emptyMap()
+        _saved.value = emptyList()
+        _active.value = null
+        player = null
+        started = false
+        tickJob?.cancel()
+        tickJob = null
+        quickestTrip.clear()
+        Prefs.remove(KEY_SAVED)
+    }
+
+    /**
+     * Stops the relay: cancels the tick job, disconnects the MQTT client, and closes the relay.
+     * Called when the user has no saved shared playlists and isn't listening along, so the MQTT
+     * client's automatic reconnect doesn't keep hitting a public broker forever (audit Phase 4
+     * network gain).
+     */
+    fun stop() {
+        if (!started) return
+        started = false
+        tickJob?.cancel()
+        tickJob = null
+        scope.launch { relay.close() }
+        player = null
+    }
 }

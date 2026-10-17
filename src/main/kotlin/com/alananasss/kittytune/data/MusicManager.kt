@@ -6,6 +6,7 @@ import com.alananasss.kittytune.ui.player.AudioEffectsState
 import com.alananasss.kittytune.ui.player.PlaybackContext
 import com.alananasss.kittytune.utils.Config
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -80,7 +81,7 @@ object MusicManager {
 
     private var rainPlayer: RainPlayer? = null
     private val tokenManager = TokenManager
-    private val scope = CoroutineScope(Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     @Volatile private var initialized = false
 
@@ -100,6 +101,14 @@ object MusicManager {
         _contextFlow.value = prefs.getLastContext()
 
         com.alananasss.kittytune.audio.automix.AutomixManager.init()
+
+        // Content filtering (issue #41): warm the block cache and load the
+        // ArtifactNet model if already downloaded (mirrors PlaybackService.onCreate).
+        // Model load is off the main thread: mmap + XNNPACK delegate init is seconds.
+        BlockManager.init()
+        scope.launch(Dispatchers.IO) {
+            com.alananasss.kittytune.audio.ai.AiDetectionManager.init()
+        }
 
         // The saved level has to be applied here rather than from the ViewModel: AppBootstrap
         // calls init() before any ViewModel exists, and plenty of code drives playback through
@@ -204,6 +213,10 @@ object MusicManager {
         rainPlayer?.setAmbientType(state.ambientType)
         rainPlayer?.setEnabled(state.isRainEnabled)
         rainPlayer?.setVolume(state.rainVolume)
+    }
+
+    fun onKaraokeStemReady(trackId: Long) {
+        player.onKaraokeStemReady(trackId)
     }
 
     fun hotSwapDevice() {

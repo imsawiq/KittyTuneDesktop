@@ -25,28 +25,21 @@ jobs:
         run: git update-index --chmod=+x gradlew
         shell: bash
 
-      # The SMTC bridge ships as a prebuilt exe; this keeps it built from the source in the tree.
-      # Without it, the "Unknown Application" fix (issue #66) would live in the .cs and never in the
-      # binary users get.
-      - name: Build SMTC bridge from source
-        run: powershell -ExecutionPolicy Bypass -File scripts/build-smtc-bridge.ps1
-        shell: powershell
-
       - name: Build Windows MSI & Portable App
-        run: .\gradlew.bat packageReleaseMsi createReleaseDistributable
+        run: .\gradlew.bat packageReleaseMsi zipWindowsPortable -PdesktopOnly=true --max-workers=2
 
-      - name: Get version from tag
+      - name: Get Windows package version
         id: get_version
         run: |
-          $version = "${{ github.ref_name }}".TrimStart("v")
+          $version = (Select-String -Path build.gradle.kts -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
           echo "VERSION=$version" >> $env:GITHUB_OUTPUT
         shell: powershell
 
       - name: Prepare Windows Distribution Binaries
         run: |
           mkdir dist-win
-          Get-ChildItem -Path build\compose\binaries\main-release\msi\*.msi | ForEach-Object { Copy-Item $_.FullName -Destination "dist-win\KittyTune-${{ steps.get_version.outputs.VERSION }}-x64.msi" }
-          Compress-Archive -Path build\compose\binaries\main-release\app\* -DestinationPath dist-win\KittyTune-${{ steps.get_version.outputs.VERSION }}-Windows-Portable-x64.zip
+          Get-ChildItem -Path "build\compose\binaries\${{ steps.get_version.outputs.VERSION }}\main-release\msi\*.msi" | ForEach-Object { Copy-Item $_.FullName -Destination "dist-win\KittyTune-${{ steps.get_version.outputs.VERSION }}-x64.msi" }
+          Copy-Item -LiteralPath "release\KittyTune-${{ steps.get_version.outputs.VERSION }}-Windows-Portable-x64.zip" -Destination dist-win
         shell: powershell
 
       - name: Upload Windows Artifacts
@@ -70,11 +63,13 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+      - name: Grant execute permission for gradlew and scripts
+        run: |
+          chmod +x gradlew
+          chmod +x scripts/*.sh 2>/dev/null || true
 
-      - name: Build macOS DMG Package
-        run: ./gradlew packageReleaseDmg
+      - name: Build macOS DMG Package with Now Playing
+        run: bash scripts/build-macos-nowplaying.sh --dmg
 
       - name: Get version from tag
         id: get_version
@@ -82,8 +77,13 @@ jobs:
 
       - name: Prepare macOS Binaries
         run: |
-          mkdir dist-mac
-          cp build/compose/binaries/main-release/dmg/*.dmg dist-mac/KittyTune-${{ steps.get_version.outputs.VERSION }}.dmg
+          mkdir -p dist-mac
+          VERSION="${{ steps.get_version.outputs.VERSION }}"
+          if [ -f "dist-mac/KittyTune-${VERSION}.dmg" ]; then
+            echo "DMG created at dist-mac/KittyTune-${VERSION}.dmg"
+          elif [ -d "build/compose/binaries/main-release/dmg" ]; then
+            cp build/compose/binaries/main-release/dmg/*.dmg "dist-mac/KittyTune-${VERSION}.dmg"
+          fi
 
       - name: Upload macOS Artifacts
         uses: actions/upload-artifact@v7
@@ -132,6 +132,29 @@ jobs:
           ar x "$DEB_FILE"
           tar -xf data.tar.* -C arch_build/pkg
           
+          # Strip foreign native binaries from onnxruntime and sqlite-jdbc
+          python3 -c '
+          import zipfile, os, glob
+          lib_dir = "arch_build/pkg/opt/kitty-tune/lib/app"
+          for f in glob.glob(os.path.join(lib_dir, "onnxruntime-*.jar")):
+              tmp = f + ".tmp"
+              with zipfile.ZipFile(f, "r") as zin, zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+                  for item in zin.infolist():
+                      if item.filename.startswith("ai/onnxruntime/native/") and not item.filename.startswith("ai/onnxruntime/native/linux-x64/"):
+                          continue
+                      zout.writestr(item, zin.read(item.filename))
+              os.replace(tmp, f)
+          for f in glob.glob(os.path.join(lib_dir, "sqlite-jdbc-*.jar")):
+              tmp = f + ".tmp"
+              with zipfile.ZipFile(f, "r") as zin, zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+                  for item in zin.infolist():
+                      if item.filename.startswith("org/sqlite/native/") and not item.filename.startswith("org/sqlite/native/Linux/x86_64/"):
+                          continue
+                      zout.writestr(item, zin.read(item.filename))
+              os.replace(tmp, f)
+          '
+          dpkg-deb -Zxz -b arch_build/pkg "$DEB_FILE"
+          
           mkdir -p arch_build/pkg/usr/share/applications
           mkdir -p arch_build/pkg/usr/share/icons/hicolor/256x256/apps
           
@@ -168,7 +191,7 @@ jobs:
           sed -i "s/REPLACE_BUILDDATE/$PKG_DATE/" arch_build/pkg/.PKGINFO
           
           cd arch_build/pkg
-          tar -cf - .PKGINFO * | zstd -z -q - -o ../../kitty-tune-${VERSION}-1-x86_64.pkg.tar.zst
+          tar -cf - .PKGINFO * | zstd -19 -T0 -q - -o ../../kitty-tune-${VERSION}-1-x86_64.pkg.tar.zst
           cd ../..
 
       - name: Prepare Linux x64 Distribution Binaries
@@ -226,6 +249,29 @@ jobs:
           ar x "$DEB_FILE"
           tar -xf data.tar.* -C arch_build_arm/pkg
           
+          # Strip foreign native binaries from onnxruntime and sqlite-jdbc
+          python3 -c '
+          import zipfile, os, glob
+          lib_dir = "arch_build_arm/pkg/opt/kitty-tune/lib/app"
+          for f in glob.glob(os.path.join(lib_dir, "onnxruntime-*.jar")):
+              tmp = f + ".tmp"
+              with zipfile.ZipFile(f, "r") as zin, zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+                  for item in zin.infolist():
+                      if item.filename.startswith("ai/onnxruntime/native/") and not item.filename.startswith("ai/onnxruntime/native/linux-aarch64/"):
+                          continue
+                      zout.writestr(item, zin.read(item.filename))
+              os.replace(tmp, f)
+          for f in glob.glob(os.path.join(lib_dir, "sqlite-jdbc-*.jar")):
+              tmp = f + ".tmp"
+              with zipfile.ZipFile(f, "r") as zin, zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zout:
+                  for item in zin.infolist():
+                      if item.filename.startswith("org/sqlite/native/") and not item.filename.startswith("org/sqlite/native/Linux/aarch64/"):
+                          continue
+                      zout.writestr(item, zin.read(item.filename))
+              os.replace(tmp, f)
+          '
+          dpkg-deb -Zxz -b arch_build_arm/pkg "$DEB_FILE"
+          
           mkdir -p arch_build_arm/pkg/usr/share/applications
           mkdir -p arch_build_arm/pkg/usr/share/icons/hicolor/256x256/apps
           
@@ -262,7 +308,7 @@ jobs:
           sed -i "s/REPLACE_BUILDDATE/$PKG_DATE/" arch_build_arm/pkg/.PKGINFO
           
           cd arch_build_arm/pkg
-          tar -cf - .PKGINFO * | zstd -z -q - -o ../../kitty-tune-${VERSION}-1-aarch64.pkg.tar.zst
+          tar -cf - .PKGINFO * | zstd -19 -T0 -q - -o ../../kitty-tune-${VERSION}-1-aarch64.pkg.tar.zst
           cd ../..
 
       - name: Prepare Linux ARM64 Distribution Binaries

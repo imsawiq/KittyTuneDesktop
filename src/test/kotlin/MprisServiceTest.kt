@@ -46,7 +46,8 @@ class MprisServiceTest {
     data class Changed(val iface: String, val keys: Set<String>)
 
     companion object {
-        private const val BUS = "org.mpris.MediaPlayer2.kittytune"
+        private val BUS_INSTANCE = "kittytune_test_${ProcessHandle.current().pid()}"
+        private val BUS = "org.mpris.MediaPlayer2.$BUS_INSTANCE"
         private const val PATH = "/org/mpris/MediaPlayer2"
         private const val PLAYER = "org.mpris.MediaPlayer2.Player"
         private const val ROOT = "org.mpris.MediaPlayer2"
@@ -84,6 +85,8 @@ class MprisServiceTest {
                 onVolume = { events.offer("volume:$it") },
                 onShuffle = { events.offer("shuffle:$it") },
                 onLoopStatus = { events.offer("loop:${it.mprisName}") },
+                onRate = { events.offer("rate:$it") },
+                busName = BUS,
             )
             client = DBusConnectionBuilder.forSessionBus().build()
             props = client.getRemoteObject(BUS, PATH, Properties::class.java, false)
@@ -121,7 +124,7 @@ class MprisServiceTest {
         }
 
         private fun ctl(vararg args: String): String {
-            val proc = ProcessBuilder(listOf("playerctl", "-p", "kittytune") + args)
+            val proc = ProcessBuilder(listOf("playerctl", "-p", BUS_INSTANCE) + args)
                 .redirectErrorStream(true).start()
             val out = proc.inputStream.bufferedReader().readText().trim()
             check(proc.waitFor() == 0) { "playerctl ${args.joinToString(" ")} failed: $out" }
@@ -131,6 +134,7 @@ class MprisServiceTest {
         private fun reset() {
             service.updateMedia(null, false, 0L)
             service.updateVolume(1.0)
+            service.updateRate(1.0)
             service.updateShuffle(false)
             service.updateLoopStatus(MprisService.LoopStatus.None)
             events.clear()
@@ -361,6 +365,40 @@ class MprisServiceTest {
     }
 
     @Test
+    fun `playback rate updates extrapolate position and notify clients`() {
+        reset()
+        assertEquals(0.5, props.Get(PLAYER, "MinimumRate") as Double, 1e-9)
+        assertEquals(2.0, props.Get(PLAYER, "MaximumRate") as Double, 1e-9)
+
+        // Set rate from MPRIS client (e.g. playerctl or Quickshell)
+        props.Set(PLAYER, "Rate", Variant(1.5, "d"))
+        assertEquals("rate:1.5", nextEvent())
+        assertEquals(1.5, props.Get(PLAYER, "Rate") as Double, 1e-9)
+
+        // Values outside min/max are clamped
+        props.Set(PLAYER, "Rate", Variant(3.0, "d"))
+        assertEquals("rate:2.0", nextEvent())
+        assertEquals(2.0, props.Get(PLAYER, "Rate") as Double, 1e-9)
+
+        // Rate update from the app (e.g. speed effect slider)
+        service.updateRate(1.25)
+        assertEquals(1.25, props.Get(PLAYER, "Rate") as Double, 1e-9)
+    }
+
+    @Test
+    fun `updatePosition from app emits Seeked signal`() {
+        reset()
+        service.updateMedia(track(), playing = true, positionMs = 10_000L)
+        seeked.clear()
+
+        // Seeked from app UI slider
+        service.updatePosition(45_000L, emitSeeked = true)
+        assertEquals(45_000_000L, nextSeeked())
+        val pos = (props.Get(PLAYER, "Position") as Long) / 1000L
+        assertTrue("position should be >= 45000ms but was $pos", pos >= 45_000L)
+    }
+
+    @Test
     fun `position and canControl are never announced`() {
         reset()
         changed.clear()
@@ -430,5 +468,30 @@ class MprisServiceTest {
             props.Set(ROOT, "Fullscreen", Variant(true, "b"))
             fail("expected PropertyReadOnly")
         } catch (e: PropertyReadOnly) { /* expected */ }
+    }
+
+    @Test
+    fun `syncPosition emits Seeked signal when drift exceeds threshold`() {
+        reset()
+        service.updateMedia(track(), playing = true, positionMs = 10_000L)
+        seeked.clear()
+
+        // Minor drift below threshold: no Seeked emitted
+        service.syncPosition(10_200L, maxDriftMs = 1000L)
+        assertTrue(seeked.poll(300, TimeUnit.MILLISECONDS) == null)
+
+        // Large drift (e.g. engine jumped or desynced): Seeked emitted
+        service.syncPosition(15_000L, maxDriftMs = 1000L)
+        assertEquals(15_000_000L, nextSeeked())
+    }
+
+    @Test
+    fun `duration override updates metadata length and position clamp`() {
+        reset()
+        val untimedTrack = track(durationMs = null)
+        service.updateMedia(untimedTrack, playing = true, positionMs = 5_000L, durationMs = 120_000L)
+        @Suppress("UNCHECKED_CAST")
+        val meta = (props.Get(PLAYER, "Metadata") as Map<String, Any?>)
+        assertEquals(120_000_000L, metaValue(meta, "mpris:length"))
     }
 }

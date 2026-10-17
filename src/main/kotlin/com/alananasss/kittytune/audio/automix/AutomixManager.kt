@@ -1,5 +1,6 @@
 package com.alananasss.kittytune.audio.automix
 
+import com.alananasss.kittytune.core.BoundedCache
 import com.alananasss.kittytune.data.MusicManager
 import com.alananasss.kittytune.data.StreamResolver
 import com.alananasss.kittytune.data.local.AppDatabase
@@ -9,6 +10,7 @@ import com.alananasss.kittytune.domain.Track
 import com.alananasss.kittytune.utils.Logger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,20 +44,20 @@ object AutomixManager {
     private val beatAnalysisJobs = ConcurrentHashMap<String, BeatAnalysisHandle>()
     private val immediateAnalysisMutex = Mutex()
     private val lookaheadAnalysisMutex = Mutex()
-    private val failedSongIds = ConcurrentHashMap<String, Long>()
+    private val failedSongIds = BoundedCache<String, Long>(200)
     @Volatile private var debugPair: Pair<Long, Long>? = null
 
     private fun updateAnalysisDebug(track: Track, update: (AutomixDebugInfo, Boolean) -> AutomixDebugInfo) {
         _automixDebugInfo.update { current ->
             val pair = debugPair
             val isCurrent = MusicManager.currentTrack?.id == track.id
-            val isNext = pair?.second == track.id && pair.first == MusicManager.currentTrack?.id
+            val isNext = pair != null && pair.second == track.id && pair.first == MusicManager.currentTrack?.id
             if (!isCurrent && !isNext) current
             else update(current ?: AutomixDebugInfo("standby"), isCurrent)
         }
     }
 
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _automixDebugInfo = MutableStateFlow<AutomixDebugInfo?>(null)
     val automixDebugInfo = _automixDebugInfo.asStateFlow()
