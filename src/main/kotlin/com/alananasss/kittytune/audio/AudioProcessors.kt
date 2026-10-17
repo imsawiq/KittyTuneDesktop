@@ -562,7 +562,7 @@ class NormalizationAudioProcessor : BaseAudioProcessor() {
                     }
                 } catch (t: Throwable) {
                     System.err.println("Failed to initialize native DSP: ${t.message}")
-                    nativeHandle = 0L
+                    destroyNative()
                 }
             }
         }
@@ -570,16 +570,18 @@ class NormalizationAudioProcessor : BaseAudioProcessor() {
 
     private fun destroyNative() {
         synchronized(nativeLock) {
-            // Cancel the cleanable first: the handle is about to be freed by nativeDestroy below,
-            // and we don't want the Cleaner to also call nativeDestroyHandle on the now-stale
-            // handle (double-free).
-            nativeCleanable?.clean()
+            val handle = nativeHandle
+            val cleanable = nativeCleanable
+            nativeHandle = 0L
             nativeCleanable = null
-            if (nativeHandle != 0L && isLibraryLoaded) {
+            // clean() executes the registered destructor; it does not merely unregister it.
+            // Clear ownership before invoking either path so reset and Cleaner cannot free twice.
+            if (cleanable != null) {
+                cleanable.clean()
+            } else if (handle != 0L && isLibraryLoaded) {
                 try {
-                    nativeDestroy(nativeHandle)
+                    nativeDestroy(handle)
                 } catch (_: Throwable) {}
-                nativeHandle = 0
             }
         }
     }

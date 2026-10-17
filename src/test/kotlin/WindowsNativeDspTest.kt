@@ -37,4 +37,26 @@ class WindowsNativeDspTest {
             processor.reset() // Resetting twice must also be safe.
         }
     }
+    @Test
+    fun repeatedConfigureAndResetReleasesEachNativeHandleOnce() {
+        val processor = NormalizationAudioProcessor()
+        try {
+            repeat(20) {
+                processor.setParameters(true, NormalizationLevel.NORMAL)
+                processor.configure(AudioFormat(44100, 2))
+                processor.flush()
+                val pcm = ByteBuffer.allocateDirect(4410 * 4).order(ByteOrder.LITTLE_ENDIAN)
+                repeat(4410) { pcm.putShort(1000).putShort(1000) }
+                pcm.flip()
+                processor.queueInput(pcm)
+                assertTrue("PCM must reach JNI before cleanup", !pcm.hasRemaining())
+                processor.reset()
+                processor.reset()
+                assertEquals(-70f, processor.getIntegratedLoudness(), 0f)
+            }
+        } finally {
+            processor.reset()
+        }
+    }
+
 }
