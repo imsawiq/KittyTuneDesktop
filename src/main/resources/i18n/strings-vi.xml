@@ -2702,4 +2702,9 @@
     <string name="menu_next_repeating">Repeating this track</string>
     <string name="home_monthly_recap_title">%1$s recap</string>
     <string name="home_monthly_recap_hours">%1$s h</string>
+    <string name="login_oauth_declined">Đăng nhập SoundCloud đã bị từ chối. Vui lòng thử lại.</string>
+    <string name="login_oauth_server_error">Không thể khởi động máy chủ đăng nhập cục bộ. Vui lòng thử lại.</string>
+    <string name="login_oauth_timeout">Đã hết thời gian chờ đăng nhập SoundCloud. Vui lòng thử lại.</string>
+    <string name="login_oauth_exchange_error">Không thể hoàn tất đăng nhập SoundCloud. Vui lòng thử lại.</string>
+    <string name="login_oauth_retry">Thử lại</string>
 </resources>

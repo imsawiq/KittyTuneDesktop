@@ -2621,4 +2621,9 @@
     <string name="menu_next_repeating">Repeating this track</string>
     <string name="home_monthly_recap_title">%1$s recap</string>
     <string name="home_monthly_recap_hours">%1$s h</string>
+    <string name="login_oauth_declined">SoundCloud sign-in was declined. Please try again.</string>
+    <string name="login_oauth_server_error">Could not start the local sign-in server. Please try again.</string>
+    <string name="login_oauth_timeout">SoundCloud sign-in timed out. Please try again.</string>
+    <string name="login_oauth_exchange_error">Could not finish SoundCloud sign-in. Please try again.</string>
+    <string name="login_oauth_retry">Try again</string>
 </resources>

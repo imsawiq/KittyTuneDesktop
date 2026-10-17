@@ -381,6 +381,16 @@ compose.desktop {
 
             macOS {
                 bundleID = "com.alananasss.kittytune"
+                infoPlist {
+                    extraKeysRawXml = """
+                        <key>CFBundleURLTypes</key>
+                        <array><dict>
+                            <key>CFBundleURLName</key><string>SoundCloud OAuth</string>
+                            <key>CFBundleURLSchemes</key><array><string>sc</string></array>
+                            <key>CFBundleTypeRole</key><string>Viewer</string>
+                        </dict></array>
+                    """.trimIndent()
+                }
                 appCategory = "public.app-category.music"
                 // Without this jpackage bundles its own generic Java icon, and the variant
                 // switcher then has nothing recognisable to fall back to.
@@ -566,11 +576,12 @@ tasks.named<ProcessResources>("processResources") {
 
 abstract class StripForeignNativesTask : DefaultTask() {
     @get:InputDirectory
+    @get:Optional
     abstract val targetDirectory: DirectoryProperty
 
     @TaskAction
     fun execute() {
-        val dir = targetDirectory.get().asFile
+        val dir = targetDirectory.orNull?.asFile ?: return
         if (!dir.exists()) return
         val osName = System.getProperty("os.name").lowercase()
         val osArch = System.getProperty("os.arch").lowercase()
@@ -617,44 +628,49 @@ abstract class StripForeignNativesTask : DefaultTask() {
             }
         }
 
-        dir.listFiles { file -> file.name.startsWith("onnxruntime-") && file.name.endsWith(".jar") }?.forEach { jar ->
+        dir.walkTopDown().filter { file -> file.isFile && file.name.startsWith("onnxruntime-") && file.name.endsWith(".jar") }.forEach { jar ->
             stripJar(jar) { name -> !name.startsWith("ai/onnxruntime/native/") || name.startsWith(targetOnnxSubdir) }
         }
 
-        dir.listFiles { file -> file.name.startsWith("sqlite-jdbc-") && file.name.endsWith(".jar") }?.forEach { jar ->
+        dir.walkTopDown().filter { file -> file.isFile && file.name.startsWith("sqlite-jdbc-") && file.name.endsWith(".jar") }.forEach { jar ->
             stripJar(jar) { name -> !name.startsWith("org/sqlite/native/") || name.startsWith(targetSqliteSubdir) }
         }
     }
 }
 
 val stripForeignNativesDistributable = tasks.register<StripForeignNativesTask>("stripForeignNativesDistributable") {
-    targetDirectory.set(desktopDistributionDirectory.map { it.dir("main-release/app/KittyTune/lib/app") })
+    targetDirectory.set(desktopDistributionDirectory.map { it.dir("main-release/app") })
 }
 
 tasks.matching { it.name == "createReleaseDistributable" }.configureEach {
     finalizedBy(stripForeignNativesDistributable)
 }
 
-val embedMacNowPlayingHelper = tasks.register("embedMacNowPlayingHelper") {
-    description = "Embeds the macOS Now Playing helper into the packaged KittyTune.app bundle."
-    val osName = System.getProperty("os.name").lowercase()
-    val isMac = osName.contains("mac")
-    enabled = isMac
-    if (isMac) {
-        dependsOn(compileMacNowPlayingHelper)
-    }
+abstract class EmbedMacNowPlayingHelperTask : DefaultTask() {
+    @get:InputDirectory
+    @get:Optional
+    abstract val helperAppDirectory: DirectoryProperty
 
-    doLast {
-        if (!isMac) return@doLast
-        val helperApp = layout.buildDirectory.dir("macos-nowplaying/KittyTune-NowPlaying-Helper.app").get().asFile
-        if (!helperApp.exists()) return@doLast
+    @get:Internal
+    abstract val desktopDistributionDir: DirectoryProperty
 
-        val baseDir = desktopDistributionDirectory.get().asFile
+    @get:Internal
+    abstract val buildDir: DirectoryProperty
+
+    @TaskAction
+    fun execute() {
+        val osName = System.getProperty("os.name").lowercase()
+        if (!osName.contains("mac")) return
+        val helperApp = helperAppDirectory.orNull?.asFile ?: return
+        if (!helperApp.exists()) return
+
+        val baseDir = desktopDistributionDir.orNull?.asFile ?: return
+        val bDir = buildDir.orNull?.asFile ?: return
         val appDirs = listOf(
             File(baseDir, "main/app/KittyTune.app"),
             File(baseDir, "main-release/app/KittyTune.app"),
-            layout.buildDirectory.dir("compose/binaries/main/app/KittyTune.app").get().asFile,
-            layout.buildDirectory.dir("compose/binaries/main-release/app/KittyTune.app").get().asFile
+            File(bDir, "compose/binaries/main/app/KittyTune.app"),
+            File(bDir, "compose/binaries/main-release/app/KittyTune.app")
         ).distinct()
 
         for (app in appDirs) {
@@ -667,6 +683,19 @@ val embedMacNowPlayingHelper = tasks.register("embedMacNowPlayingHelper") {
             }
         }
     }
+}
+
+val embedMacNowPlayingHelper = tasks.register<EmbedMacNowPlayingHelperTask>("embedMacNowPlayingHelper") {
+    description = "Embeds the macOS Now Playing helper into the packaged KittyTune.app bundle."
+    val osName = System.getProperty("os.name").lowercase()
+    val isMac = osName.contains("mac")
+    enabled = isMac
+    if (isMac) {
+        dependsOn(compileMacNowPlayingHelper)
+    }
+    helperAppDirectory.set(layout.buildDirectory.dir("macos-nowplaying/KittyTune-NowPlaying-Helper.app"))
+    desktopDistributionDir.set(desktopDistributionDirectory)
+    buildDir.set(layout.buildDirectory)
 }
 
 tasks.matching { it.name in listOf("createDistributable", "createReleaseDistributable") }.configureEach {
@@ -717,6 +746,10 @@ tasks.register<Test>("headlessTest") {
     doFirst { listOf("home", "roaming", "local", "tmp").forEach { File(profile, it).mkdirs() } }
     maxHeapSize = "768m"
     maxParallelForks = 1
+    // One JVM per test class: a crash in the native DSP library (e.g. heap corruption
+    // under a different MSVC toolchain) then kills only that class's fork instead of
+    // taking down the whole suite with an unreadable log.
+    forkEvery = 1
     filter {
         listOf("SignedUrlTest", "SidebarNavLayoutTest", "QueuePlayedMarkingTest",
             "PlayerRemainingTimeTest", "PlaylistTotalDurationTest", "SettingsSearchTest",
@@ -726,7 +759,7 @@ tasks.register<Test>("headlessTest") {
             "ConnectNetworkStateTest", "ConnectRefactorTest", "SyncPlaybackTest", "ConnectWireTest",
             "ConnectSocketListenerTest", "ConnectHandoffTest", "ConnectLanServerTest", "ConnectRenderTest", "LocalizationParityTest",
             "PlayerButtonRowsTest", "PlayheadClockTest", "WheelSeekTest",
-            "ToolWindowStyleRaiseToFrontTest"
+            "ToolWindowStyleRaiseToFrontTest", "*SoundCloudOAuthTest"
         ).forEach(::includeTestsMatching)
     }
 }
