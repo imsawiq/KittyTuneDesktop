@@ -2626,4 +2626,23 @@
     <string name="login_oauth_timeout">SoundCloud sign-in timed out. Please try again.</string>
     <string name="login_oauth_exchange_error">Could not finish SoundCloud sign-in. Please try again.</string>
     <string name="login_oauth_retry">Try again</string>
+    <string name="friends_title">Friends are listening</string>
+    <string name="friends_manage">Manage</string>
+    <string name="friends_empty">None of your added friends are listening to music right now.</string>
+    <string name="friends_anonymous">Anonymous listener</string>
+    <string name="friends_description">Add friends using their KittyTune codes to see the music they share.</string>
+    <string name="friends_share">Share what I am listening to</string>
+    <string name="friends_show_name">Show my profile name</string>
+    <string name="friends_code_help">Give your code to friends. They can only see your current public track while sharing is enabled. Your name is hidden by default.</string>
+    <string name="friends_copy_code">Copy my code</string>
+    <string name="friends_enter_code">Friend’s code</string>
+    <string name="friends_add">Add friend</string>
+    <string name="friends_added">Friend added.</string>
+    <string name="friends_already_added">This friend has already been added.</string>
+    <string name="friends_invalid_code">Invalid KittyTune friend code.</string>
+    <string name="friends_own_code">This is your own code.</string>
+    <string name="friends_limit">You can add up to 32 friends.</string>
+    <string name="friends_contact">Friend %1$d</string>
+    <string name="friends_remove">Remove friend</string>
+    <string name="friends_unavailable">Could not prepare sharing. Please try again.</string>
 </resources>

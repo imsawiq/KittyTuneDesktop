@@ -2625,4 +2625,23 @@
     <string name="connect_save">Mentés</string>
     <string name="connect_settings">Kapcsolati beállítások</string>
     <string name="connect_this_device">Ez az eszköz</string>
+    <string name="friends_title">Ezt hallgatják a barátaid</string>
+    <string name="friends_manage">Kezelés</string>
+    <string name="friends_empty">Jelenleg egyik hozzáadott barátod sem hallgat zenét.</string>
+    <string name="friends_anonymous">Névtelen hallgató</string>
+    <string name="friends_description">Adj hozzá barátokat a KittyTune-kódjukkal, hogy lásd, milyen zenét osztanak meg.</string>
+    <string name="friends_share">Megosztom, amit hallgatok</string>
+    <string name="friends_show_name">Profilnevem megjelenítése</string>
+    <string name="friends_code_help">Add meg a kódodat a barátaidnak. Csak az éppen hallgatott nyilvános számot látják, amíg a megosztás be van kapcsolva. A neved alapértelmezés szerint rejtve marad.</string>
+    <string name="friends_copy_code">Saját kódom másolása</string>
+    <string name="friends_enter_code">Barát kódja</string>
+    <string name="friends_add">Barát hozzáadása</string>
+    <string name="friends_added">Barát hozzáadva.</string>
+    <string name="friends_already_added">Ezt a barátot már hozzáadtad.</string>
+    <string name="friends_invalid_code">Érvénytelen KittyTune-baráti kód.</string>
+    <string name="friends_own_code">Ez a saját kódod.</string>
+    <string name="friends_limit">Legfeljebb 32 barátot adhatsz hozzá.</string>
+    <string name="friends_contact">%1$d. barát</string>
+    <string name="friends_remove">Barát eltávolítása</string>
+    <string name="friends_unavailable">Nem sikerült előkészíteni a megosztást. Próbáld újra.</string>
 </resources>

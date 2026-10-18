@@ -41,7 +41,7 @@ import java.time.format.DateTimeFormatter
 
 /** Last month's actual listening. The minute tick checks calendar rollover; only revisions or a new month query data. */
 @Composable
-internal fun MonthlyRecapSection(onOpenStats: () -> Unit) {
+internal fun MonthlyRecapSection(onOpenStats: (String) -> Unit) {
     val window by produceState(initialValue = MonthlyRecap.previousCompletedMonth(System.currentTimeMillis(), ZoneId.systemDefault())) {
         while (isActive) {
             delay(60_000L)
@@ -64,6 +64,7 @@ internal fun MonthlyRecapSection(onOpenStats: () -> Unit) {
         }
     }
     val recap = loaded?.takeIf { it.window == window && it.artists.isNotEmpty() } ?: return
+    val openMonth = { onOpenStats(recap.window.month.toString()) }
     val locale = Strings.locale()
     val monthLabel = recap.window.month.format(DateTimeFormatter.ofPattern("LLLL yyyy", locale))
         .replaceFirstChar { it.titlecase(locale) }
@@ -78,13 +79,13 @@ internal fun MonthlyRecapSection(onOpenStats: () -> Unit) {
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = onOpenStats) { Text(str("listening_stats_show_all")) }
+            TextButton(onClick = openMonth) { Text(str("listening_stats_show_all")) }
         }
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val columns = if (maxWidth >= 840.dp) recap.artists.size else 1
             MorphingGrid(columns = columns, spacing = 12.dp) {
                 recap.artists.forEachIndexed { index, artist ->
-                    MonthlyArtist(artist, rank = index + 1, onOpenStats = onOpenStats)
+                    MonthlyArtist(artist, rank = index + 1, onOpenStats = openMonth)
                 }
             }
         }

@@ -2707,4 +2707,23 @@
     <string name="connect_save">Lưu</string>
     <string name="connect_settings">Cài đặt kết nối</string>
     <string name="connect_this_device">Thiết bị này</string>
+    <string name="friends_title">Bạn bè đang nghe</string>
+    <string name="friends_manage">Quản lý</string>
+    <string name="friends_empty">Hiện không có người bạn nào đã thêm đang nghe nhạc.</string>
+    <string name="friends_anonymous">Người nghe ẩn danh</string>
+    <string name="friends_description">Thêm bạn bè bằng mã KittyTune để xem nhạc họ chia sẻ.</string>
+    <string name="friends_share">Chia sẻ nhạc tôi đang nghe</string>
+    <string name="friends_show_name">Hiển thị tên hồ sơ của tôi</string>
+    <string name="friends_code_help">Gửi mã của bạn cho bạn bè. Họ chỉ thấy bài hát công khai bạn đang nghe khi tính năng chia sẻ được bật. Tên của bạn được ẩn theo mặc định.</string>
+    <string name="friends_copy_code">Sao chép mã của tôi</string>
+    <string name="friends_enter_code">Mã của bạn bè</string>
+    <string name="friends_add">Thêm bạn</string>
+    <string name="friends_added">Đã thêm bạn.</string>
+    <string name="friends_already_added">Người bạn này đã được thêm.</string>
+    <string name="friends_invalid_code">Mã bạn bè KittyTune không hợp lệ.</string>
+    <string name="friends_own_code">Đây là mã của chính bạn.</string>
+    <string name="friends_limit">Bạn có thể thêm tối đa 32 người bạn.</string>
+    <string name="friends_contact">Bạn %1$d</string>
+    <string name="friends_remove">Xóa bạn</string>
+    <string name="friends_unavailable">Không thể chuẩn bị chia sẻ. Vui lòng thử lại.</string>
 </resources>

@@ -2628,4 +2628,23 @@
     <string name="login_oauth_timeout">Le délai de connexion à SoundCloud a expiré. Réessayez.</string>
     <string name="login_oauth_exchange_error">Impossible de terminer la connexion à SoundCloud. Réessayez.</string>
     <string name="login_oauth_retry">Réessayer</string>
+    <string name="friends_title">Ce que vos amis écoutent</string>
+    <string name="friends_manage">Gérer</string>
+    <string name="friends_empty">Aucun des amis ajoutés n’écoute de musique en ce moment.</string>
+    <string name="friends_anonymous">Auditeur anonyme</string>
+    <string name="friends_description">Ajoutez des amis avec leur code KittyTune pour voir la musique qu’ils partagent.</string>
+    <string name="friends_share">Partager ce que j’écoute</string>
+    <string name="friends_show_name">Afficher mon nom de profil</string>
+    <string name="friends_code_help">Donnez votre code à vos amis. Ils verront uniquement le titre public en cours tant que le partage est activé. Votre nom est masqué par défaut.</string>
+    <string name="friends_copy_code">Copier mon code</string>
+    <string name="friends_enter_code">Code de l’ami</string>
+    <string name="friends_add">Ajouter un ami</string>
+    <string name="friends_added">Ami ajouté.</string>
+    <string name="friends_already_added">Cet ami a déjà été ajouté.</string>
+    <string name="friends_invalid_code">Code d’ami KittyTune non valide.</string>
+    <string name="friends_own_code">C’est votre propre code.</string>
+    <string name="friends_limit">Vous pouvez ajouter jusqu’à 32 amis.</string>
+    <string name="friends_contact">Ami %1$d</string>
+    <string name="friends_remove">Retirer cet ami</string>
+    <string name="friends_unavailable">Impossible de préparer le partage. Veuillez réessayer.</string>
 </resources>

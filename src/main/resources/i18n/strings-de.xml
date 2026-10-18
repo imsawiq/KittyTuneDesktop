@@ -2846,4 +2846,23 @@
     <string name="connect_save">Speichern</string>
     <string name="connect_settings">Verbindungseinstellungen</string>
     <string name="connect_this_device">Dieses Gerät</string>
+    <string name="friends_title">Das hören Freunde</string>
+    <string name="friends_manage">Verwalten</string>
+    <string name="friends_empty">Keiner deiner hinzugefügten Freunde hört gerade Musik.</string>
+    <string name="friends_anonymous">Anonymer Zuhörer</string>
+    <string name="friends_description">Füge Freunde mit ihrem KittyTune-Code hinzu, um zu sehen, welche Musik sie teilen.</string>
+    <string name="friends_share">Teilen, was ich gerade höre</string>
+    <string name="friends_show_name">Meinen Profilnamen anzeigen</string>
+    <string name="friends_code_help">Gib deinen Code an Freunde weiter. Sie sehen nur deinen aktuellen öffentlichen Titel, solange das Teilen aktiviert ist. Dein Name bleibt standardmäßig verborgen.</string>
+    <string name="friends_copy_code">Meinen Code kopieren</string>
+    <string name="friends_enter_code">Code eines Freundes</string>
+    <string name="friends_add">Freund hinzufügen</string>
+    <string name="friends_added">Freund hinzugefügt.</string>
+    <string name="friends_already_added">Dieser Freund wurde bereits hinzugefügt.</string>
+    <string name="friends_invalid_code">Ungültiger KittyTune-Freundescode.</string>
+    <string name="friends_own_code">Das ist dein eigener Code.</string>
+    <string name="friends_limit">Du kannst bis zu 32 Freunde hinzufügen.</string>
+    <string name="friends_contact">Freund %1$d</string>
+    <string name="friends_remove">Freund entfernen</string>
+    <string name="friends_unavailable">Der Austausch konnte nicht vorbereitet werden. Bitte versuche es erneut.</string>
 </resources>

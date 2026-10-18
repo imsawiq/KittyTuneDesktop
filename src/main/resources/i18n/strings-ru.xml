@@ -2625,4 +2625,23 @@
     <string name="login_oauth_timeout">Время ожидания входа в SoundCloud истекло. Попробуйте ещё раз.</string>
     <string name="login_oauth_exchange_error">Не удалось завершить вход в SoundCloud. Попробуйте ещё раз.</string>
     <string name="login_oauth_retry">Попробовать ещё раз</string>
+    <string name="friends_title">Слушают друзья</string>
+    <string name="friends_manage">Управление</string>
+    <string name="friends_empty">Сейчас никто из добавленных друзей не слушает музыку.</string>
+    <string name="friends_anonymous">Анонимный слушатель</string>
+    <string name="friends_description">Добавьте друзей по коду KittyTune, чтобы видеть музыку, которой они делятся.</string>
+    <string name="friends_share">Делиться тем, что я слушаю</string>
+    <string name="friends_show_name">Показывать моё имя из профиля</string>
+    <string name="friends_code_help">Передайте свой код друзьям. Они увидят только текущий публичный трек, пока включена передача. По умолчанию ваше имя скрыто.</string>
+    <string name="friends_copy_code">Скопировать мой код</string>
+    <string name="friends_enter_code">Код друга</string>
+    <string name="friends_add">Добавить друга</string>
+    <string name="friends_added">Друг добавлен.</string>
+    <string name="friends_already_added">Этот друг уже добавлен.</string>
+    <string name="friends_invalid_code">Неверный код друга KittyTune.</string>
+    <string name="friends_own_code">Это ваш собственный код.</string>
+    <string name="friends_limit">Можно добавить до 32 друзей.</string>
+    <string name="friends_contact">Друг %1$d</string>
+    <string name="friends_remove">Удалить друга</string>
+    <string name="friends_unavailable">Не удалось подготовить обмен. Попробуйте ещё раз.</string>
 </resources>

@@ -781,8 +781,9 @@ fun MainScreen(
                         }
                         // The listening statistics screen existed but nothing navigated to it, so
                         // the events being recorded had nowhere to be seen (issue #33).
-                        composable("listening_stats") {
+                        composable("listening_stats?month={month}") { statsEntry ->
                             com.alananasss.kittytune.ui.profile.ListeningStatsScreen(
+                                initialMonth = statsEntry.arguments?.let { args -> runCatching { args.read { getString("month") } }.getOrNull() },
                                 onBackClick = { navController.popBackStack() },
                                 onTrackClick = { trackId -> playerViewModel.navigateToTrackDetails(trackId) },
                                 onArtistClick = { artist ->

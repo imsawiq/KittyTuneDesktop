@@ -24,9 +24,11 @@ import java.time.ZoneId
  * open shows up without leaving it. A load still in flight is cancelled by the next one, so flicking through
  * the periods always settles on the one that is selected.
  */
-class ListeningStatsViewModel : ViewModel() {
+class ListeningStatsViewModel(initialMonth: String? = null) : ViewModel() {
 
-    var period by mutableStateOf(ReportPeriod.WEEK)
+    private var recapMonth = initialMonth?.let { runCatching { java.time.YearMonth.parse(it) }.getOrNull() }
+
+    var period by mutableStateOf(if (recapMonth == null) ReportPeriod.WEEK else ReportPeriod.MONTH)
         private set
     var report by mutableStateOf<ListeningReport?>(null)
         private set
@@ -50,7 +52,8 @@ class ListeningStatsViewModel : ViewModel() {
     }
 
     fun selectPeriod(value: ReportPeriod) {
-        if (value == period) return
+        if (value == period && recapMonth == null) return
+        recapMonth = null
         period = value
         load()
     }
@@ -63,7 +66,12 @@ class ListeningStatsViewModel : ViewModel() {
             val zone = ZoneId.systemDefault()
             val now = System.currentTimeMillis()
             val firstEventMs = ListeningStatsRepository.getSnapshot(0L).firstAtMs
-            val window = ListeningReports.windowFor(selected, now, zone, firstEventMs)
+            val window = recapMonth?.let { month ->
+                com.alananasss.kittytune.data.stats.ReportWindow(
+                    month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli(),
+                    month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli(),
+                )
+            } ?: ListeningReports.windowFor(selected, now, zone, firstEventMs)
             val previous = ListeningReports.previousWindow(selected, window, zone)
             val rows = ListeningStatsRepository.getEvents(previous?.startMs ?: window.startMs)
             val built = withContext(Dispatchers.Default) {

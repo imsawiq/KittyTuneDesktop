@@ -64,9 +64,10 @@ fun ListeningStatsScreen(
     onBackClick: () -> Unit,
     onTrackClick: (trackId: Long) -> Unit,
     onArtistClick: (ReportArtist) -> Unit,
+    initialMonth: String? = null,
 ) {
     // Built through an explicit initializer: the default factory route throws on desktop (issue #33).
-    val viewModel: ListeningStatsViewModel = viewModel { ListeningStatsViewModel() }
+    val viewModel: ListeningStatsViewModel = viewModel { ListeningStatsViewModel(initialMonth) }
     val report = viewModel.report
     var openList by remember { mutableStateOf(StatsList.NONE) }
     var showPrivacy by remember { mutableStateOf(false) }

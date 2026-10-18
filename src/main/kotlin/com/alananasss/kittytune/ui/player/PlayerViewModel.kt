@@ -1845,6 +1845,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         observeTrackGain()
         startTrimWatcher()
         com.alananasss.kittytune.data.together.Together.start(this)
+        com.alananasss.kittytune.data.friends.FriendListeningRepository.start()
+        viewModelScope.launch {
+            snapshotFlow { Triple(currentTrack, isPlaying, currentUser?.username) }.collect { (track, playing, name) ->
+                com.alananasss.kittytune.data.friends.FriendListeningRepository.updatePlayback(track, playing, name)
+            }
+        }
 
         // The listen in progress when the app exits used to be lost outright — the single most common
         // way for a track to end, and the one nobody was recording (issue #33). The hook runs on a
@@ -2157,6 +2163,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     override fun onCleared() {
+        com.alananasss.kittytune.data.friends.FriendListeningRepository.close()
         remoteTicker?.cancel()
         remoteVolumeJob?.cancel()
         super.onCleared()

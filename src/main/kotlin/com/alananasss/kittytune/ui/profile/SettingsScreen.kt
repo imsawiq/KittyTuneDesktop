@@ -207,6 +207,7 @@ internal enum class SettingsSubPage(val titleKey: String, val subtitleKey: Strin
     // Misc
     MISC_GENERAL("settings_cat_general", "misc_general_sub", Icons.Rounded.Tune),
     MISC_DISCORD("pref_discord_title", "misc_discord_sub", Icons.Rounded.Forum),
+    MISC_FRIENDS("friends_title", "friends_description", Icons.Rounded.Groups),
     MISC_CONTENT_FILTER("pref_content_filter_title", "pref_content_filter_subtitle", Icons.Rounded.Block),
 }
 
@@ -254,6 +255,7 @@ private val networkPages = listOf(
 private val miscPages = listOf(
     SettingsSubPage.MISC_GENERAL,
     SettingsSubPage.MISC_DISCORD,
+    SettingsSubPage.MISC_FRIENDS,
     SettingsSubPage.MISC_CONTENT_FILTER,
 )
 
@@ -347,6 +349,7 @@ private fun SettingsPageContent(
 
         // Misc subpages
         SettingsSubPage.MISC_GENERAL -> MiscGeneralPage()
+        SettingsSubPage.MISC_FRIENDS -> FriendListeningSettingsPage()
         SettingsSubPage.MISC_DISCORD -> MiscDiscordPage(navController, playerViewModel)
         SettingsSubPage.MISC_CONTENT_FILTER -> ContentFilterSettingsPage()
     }
@@ -961,6 +964,7 @@ private fun getSearchableSettings(playerViewModel: PlayerViewModel): List<Settin
         SettingsSearchItem(str("settings_cat_misc"), null, SettingsCategory.MISC, SettingsPlace(SettingsCategory.MISC), Icons.Rounded.Tune, keywords = listOf("misc", "general", "options", "разное", "общие")),
         SettingsSearchItem(str("settings_cat_general"), str("misc_general_sub"), SettingsCategory.MISC, SettingsPlace(SettingsCategory.MISC, listOf(SettingsSubPage.MISC_GENERAL)), Icons.Rounded.Tune, keywords = listOf("general", "language", "start screen", "update")),
         SettingsSearchItem(str("pref_discord_title"), str("misc_discord_sub"), SettingsCategory.MISC, SettingsPlace(SettingsCategory.MISC, listOf(SettingsSubPage.MISC_DISCORD)), Icons.Rounded.Forum, keywords = listOf("discord", "rpc", "presence", "дискорд", "статус")),
+        SettingsSearchItem(str("friends_title"), str("friends_description"), SettingsCategory.MISC, SettingsPlace(SettingsCategory.MISC, listOf(SettingsSubPage.MISC_FRIENDS)), Icons.Rounded.Groups, keywords = listOf("friends", "privacy", "listening", "друзья", "конфиденциальность")),
         SettingsSearchItem(str("pref_language"), null, SettingsCategory.MISC, SettingsPlace(SettingsCategory.MISC, listOf(SettingsSubPage.MISC_GENERAL)), Icons.Rounded.Translate, keywords = listOf("language", "lang", "locale", "langue", "язык", "локализация")),
         SettingsSearchItem(str("pref_start_screen"), null, SettingsCategory.MISC, SettingsPlace(SettingsCategory.MISC, listOf(SettingsSubPage.MISC_GENERAL)), Icons.Rounded.Home, keywords = listOf("start screen", "home", "library", "стартовый экран")),
         SettingsSearchItem(

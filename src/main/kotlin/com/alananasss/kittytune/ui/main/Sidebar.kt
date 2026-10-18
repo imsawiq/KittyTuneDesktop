@@ -131,7 +131,7 @@ fun Sidebar(
 ) {
     com.alananasss.kittytune.ui.debug.TraceRecompositions("Sidebar")
     val backStackEntry by navController.currentBackStackEntryAsState()
-    val currentRoute = backStackEntry?.destination?.route
+    val currentRoute = backStackEntry?.destination?.route?.substringBefore('?')
 
     // Whole sections of the app somebody may never open; Home always stays (issue #33).
     val navPrefs = remember { PlayerPreferences() }

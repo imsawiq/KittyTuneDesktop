@@ -120,10 +120,25 @@ internal fun HomeFeed(
             }
         }
 
+        item(key = "friends_listening") {
+            com.alananasss.kittytune.ui.home.FriendListeningSection(
+                onManage = {
+                    com.alananasss.kittytune.ui.profile.SettingsNavigation.go(
+                        com.alananasss.kittytune.ui.profile.SettingsPlace(
+                            com.alananasss.kittytune.ui.profile.SettingsCategory.MISC,
+                            listOf(com.alananasss.kittytune.ui.profile.SettingsSubPage.MISC_FRIENDS),
+                        ),
+                    )
+                    navController.navigate("settings")
+                },
+                onPlay = { playerViewModel.playPlaylist(listOf(it)) },
+            )
+        }
+
         if (showHomeListeningStats) {
             item(key = "stats") { Box(Modifier.padding(horizontal = HOME_PADDING)) { ListeningStatsCard(navController) } }
             item(key = "monthly_recap") {
-                com.alananasss.kittytune.ui.home.MonthlyRecapSection(onOpenStats = { navController.navigate("listening_stats") })
+                com.alananasss.kittytune.ui.home.MonthlyRecapSection(onOpenStats = { month -> navController.navigate("listening_stats?month=$month") })
             }
         }
 
