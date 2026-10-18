@@ -5632,11 +5632,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         fromPlayer: Boolean = false,
         queueIndex: Int? = null,
     ) {
+        // Compose can retain an equal track from an earlier snapshot after session restoration.
+        // Resolve its slot now, then retain exact occurrence identity while the menu is open.
+        val menuTrack = if (queueIndex != null && !isRemotePlayback) {
+            queueMenuOccurrence(_queue, queueIndex, track) ?: return
+        } else track
         menuContextQueueIndex = queueIndex
         menuContextQueueVersion = if (isRemotePlayback && queueIndex != null) {
             remotePeer?.queueVersion?.takeIf { uiQueueState.getOrNull(queueIndex) === track }.orEmpty()
         } else null
-        trackForMenu = track; menuContextPlaylistId = playlistContextId; isMenuContextFromPlayer =
+        trackForMenu = menuTrack; menuContextPlaylistId = playlistContextId; isMenuContextFromPlayer =
             fromPlayer; showMenuSheet = true
     }
 

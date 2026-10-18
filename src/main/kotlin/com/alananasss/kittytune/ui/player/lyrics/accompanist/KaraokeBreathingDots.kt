@@ -38,7 +38,7 @@ private val layerPaint = Paint()
 
 data class KaraokeBreathingDotsDefaults(
     val number: Int = 3,
-    val size: Dp = 16.dp,
+    val size: Dp = 24.dp,
     val margin: Dp = 12.dp,
     val enterDurationMs: Int = 3000,
     val preExitStillDuration: Int = 200,

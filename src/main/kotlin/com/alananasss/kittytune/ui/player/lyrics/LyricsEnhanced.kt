@@ -311,9 +311,9 @@ fun LyricsEnhanced(
                                 lrcBounceEnabled = viewModel.lyricsLrcBounceEnabled,
                                 bounceFactor = viewModel.lyricsBounceFactor,
                                 lineSpacing = lyricsLineSpacingDp,
-                                // The dots between verses at the size of the panel, not of a window.
+                                // Keep the musical interlude legible at the sidebar's smaller text size.
                                 breathingDotsDefaults = if (isSidebar) {
-                                    com.alananasss.kittytune.ui.player.lyrics.accompanist.KaraokeBreathingDotsDefaults(size = 8.dp, margin = 6.dp)
+                                    com.alananasss.kittytune.ui.player.lyrics.accompanist.KaraokeBreathingDotsDefaults(size = 16.dp, margin = 6.dp)
                                 } else {
                                     com.alananasss.kittytune.ui.player.lyrics.accompanist.KaraokeBreathingDotsDefaults()
                                 },

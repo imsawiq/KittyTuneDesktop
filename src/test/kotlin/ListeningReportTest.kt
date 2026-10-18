@@ -75,6 +75,8 @@ class ListeningReportTest {
         )
         val report = ListeningReports.build(ReportPeriod.WEEK, window, events, null, zone)
         assertEquals("bcover", report.topArtists.first { it.name == "B" }.imageUrl)
+        assertNull(report.topArtists.first { it.name == "B" }.portraitUrl)
         assertEquals("https://i1.sndcdn.com/avatars-c.jpg", report.topArtists.first { it.name == "C" }.imageUrl)
+        assertEquals("https://i1.sndcdn.com/avatars-c.jpg", report.topArtists.first { it.name == "C" }.portraitUrl)
     }
 }

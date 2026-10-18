@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import com.alananasss.kittytune.core.str
 import com.alananasss.kittytune.data.stats.ListeningReport
 import com.alananasss.kittytune.data.stats.ReportArtist
+import com.alananasss.kittytune.ui.profile.stats.ArtistPortrait
 import com.alananasss.kittytune.data.stats.ReportPeriod
 import com.alananasss.kittytune.data.stats.ReportTrack
 import com.alananasss.kittytune.ui.common.MorphingGrid
@@ -469,7 +470,14 @@ private fun TopArtistCard(rank: Int, artist: ReportArtist, onClick: () -> Unit) 
             .clickable(interactionSource = interaction, indication = ripple(), onClick = onClick)
             .pressScale(interaction),
     ) {
-        StatsCover(artist.imageUrl, Modifier.fillMaxSize(), placeholder = Icons.Rounded.Person)
+        ArtistPortrait(
+            name = artist.name,
+            avatarUrl = artist.portraitUrl,
+            fallbackUrl = artist.imageUrl,
+            source = artist.source,
+            artistId = artist.artistId,
+            modifier = Modifier.fillMaxSize(),
+        )
         Box(
             Modifier.fillMaxSize().background(
                 Brush.verticalGradient(0.45f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.78f)),

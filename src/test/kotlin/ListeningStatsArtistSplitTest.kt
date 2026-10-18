@@ -113,5 +113,9 @@ class ListeningStatsArtistSplitTest {
         assertEquals(2, aggregated.size)
         assertTrue(aggregated.any { it.artistName == "Artist A" && it.playCount == 4 })
         assertTrue(aggregated.any { it.artistName == "Artist B" && it.playCount == 4 })
+        val guest = aggregated.first { it.artistName == "Artist B" }
+        assertEquals(null, guest.artworkUrl, "A collaborator must not inherit another person's photo")
+        assertEquals(null, guest.artistId)
+        assertEquals(null, guest.artistPermalink)
     }
 }

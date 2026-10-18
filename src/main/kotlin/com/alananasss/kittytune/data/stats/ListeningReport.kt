@@ -37,6 +37,8 @@ data class ReportArtist(
     val source: String,
     val plays: Int,
     val listenMs: Long,
+    /** A real artist photo, kept separate from the album-cover fallback in [imageUrl]. */
+    val portraitUrl: String? = null,
 )
 
 /**
@@ -169,6 +171,7 @@ object ListeningReports {
             ReportArtist(
                 name = name,
                 imageUrl = avatar ?: cover,
+                portraitUrl = avatar,
                 artistId = own.firstNotNullOfOrNull { it.artistId },
                 permalink = own.firstNotNullOfOrNull { it.artistPermalink },
                 source = entries.first().second.source,

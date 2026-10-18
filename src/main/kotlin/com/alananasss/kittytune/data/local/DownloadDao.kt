@@ -704,7 +704,7 @@ class DownloadDao(private val db: AppDatabase) {
             for (item in raw) {
                 val names = splitArtistNames(item.artistName)
                 val isMulti = names.size > 1
-                for (name in names) {
+                for ((nameIndex, name) in names.withIndex()) {
                     val key = name.lowercase()
                     val acc = accMap.getOrPut(key) {
                         ArtistAcc(displayName = name)
@@ -718,7 +718,7 @@ class DownloadDao(private val db: AppDatabase) {
                         if (!item.artistPermalink.isNullOrBlank()) acc.artistPermalink = item.artistPermalink
                         if (!item.source.isNullOrBlank()) acc.source = item.source
                         acc.displayName = name
-                    } else {
+                    } else if (nameIndex == 0) {
                         if (acc.artworkUrl == null && !item.artworkUrl.isNullOrBlank()) acc.artworkUrl = item.artworkUrl
                         if (acc.artistId == null && item.artistId != null && item.artistId > 0) acc.artistId = item.artistId
                         if (acc.artistPermalink == null && !item.artistPermalink.isNullOrBlank()) acc.artistPermalink = item.artistPermalink

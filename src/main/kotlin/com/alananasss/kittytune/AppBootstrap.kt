@@ -65,7 +65,8 @@ object AppBootstrap {
         // Prevent JavaCPP from falsely throwing OutOfMemoryError when host physical memory > 8GB
         System.setProperty("org.bytedeco.javacpp.maxphysicalbytes", "0")
 
-        com.alananasss.kittytune.audio.ai.OnnxHelper.ensureNativeLibrariesLoaded()
+        // Disable telemetry now; loading the runtime and creating its environment belongs to the first AI use.
+        com.alananasss.kittytune.audio.ai.OnnxHelper.disableNativeTelemetry()
         com.alananasss.kittytune.core.LinuxAppIdHelper.apply()
 
         runCatching {

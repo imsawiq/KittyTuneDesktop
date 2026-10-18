@@ -27,6 +27,7 @@ import com.alananasss.kittytune.data.stats.ListeningReport
 import com.alananasss.kittytune.data.stats.ReportArtist
 import com.alananasss.kittytune.data.stats.ReportPeriod
 import com.alananasss.kittytune.ui.profile.stats.readableRecapStops
+import com.alananasss.kittytune.ui.profile.stats.ArtistPortrait
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -79,10 +80,13 @@ internal fun StoryStats(
                         Text(str("stats_story_top_artist"), style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(16.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            StatsCover(
-                                artist.imageUrl,
-                                Modifier.size(140.dp).clip(CircleShape).clickable { onArtistClick(artist) },
-                                placeholder = Icons.Rounded.Person,
+                            ArtistPortrait(
+                                name = artist.name,
+                                avatarUrl = artist.portraitUrl,
+                                fallbackUrl = artist.imageUrl,
+                                source = artist.source,
+                                artistId = artist.artistId,
+                                modifier = Modifier.size(140.dp).clickable { onArtistClick(artist) },
                             )
                             Spacer(Modifier.width(24.dp))
                             Column(Modifier.weight(1f)) {

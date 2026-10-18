@@ -49,19 +49,27 @@ object AppDatabase {
     val blockedContentDao: BlockedContentDao by lazy { BlockedContentDao(this) }
     val likeDao: LikeDao by lazy { LikeDao(this) }
 
+    @Synchronized
     fun init() {
+        // Reopening here would orphan the connection while queued DAO work is still using it.
+        if (::conn.isInitialized && !conn.isClosed) return
         Class.forName("org.sqlite.JDBC")
         conn = DriverManager.getConnection("jdbc:sqlite:${dbFile.absolutePath}")
-        conn.autoCommit = true
-        conn.createStatement().use { st ->
-            st.execute("PRAGMA journal_mode=WAL")
-            st.execute("PRAGMA foreign_keys=ON")
-            st.execute("PRAGMA synchronous=NORMAL")
-            st.execute("PRAGMA busy_timeout=5000")
-            st.execute("PRAGMA cache_size=-1000")
-            st.execute("PRAGMA mmap_size=0")
+        try {
+            conn.autoCommit = true
+            conn.createStatement().use { st ->
+                st.execute("PRAGMA journal_mode=WAL")
+                st.execute("PRAGMA foreign_keys=ON")
+                st.execute("PRAGMA synchronous=NORMAL")
+                st.execute("PRAGMA busy_timeout=5000")
+                st.execute("PRAGMA cache_size=-1000")
+                st.execute("PRAGMA mmap_size=0")
+            }
+            createSchema()
+        } catch (error: Exception) {
+            try { conn.close() } catch (closeError: Exception) { error.addSuppressed(closeError) }
+            throw error
         }
-        createSchema()
     }
 
     private fun createSchema() {
