@@ -7,7 +7,7 @@ import java.util.zip.ZipOutputStream
 plugins {
     kotlin("jvm") version "2.4.21"
     kotlin("plugin.serialization") version "2.4.21"
-    id("org.jetbrains.compose") version "1.12.1"
+    id("org.jetbrains.compose") version "1.12.2"
     id("org.jetbrains.kotlin.plugin.compose") version "2.4.21"
 }
 
@@ -125,7 +125,7 @@ dependencies {
         implementation("org.bytedeco:tensorflow-lite:$tfliteVersion:$tfliteClassifier")
     }
 
-    val onnxVersion = "1.29.0"
+    val onnxVersion = "1.31.0"
     implementation("com.microsoft.onnxruntime:onnxruntime:$onnxVersion")
 
     implementation("sh.calvin.reorderable:reorderable:3.1.0")
