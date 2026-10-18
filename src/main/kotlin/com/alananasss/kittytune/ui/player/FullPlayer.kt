@@ -84,11 +84,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
+import com.alananasss.kittytune.ui.player.cover.featheredArtwork
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -1029,22 +1027,6 @@ private const val SPACING_PER_SP = 0.34f
  * height, capped, so it stays about a third of the window and keeps its air instead of growing to fill
  * whatever it is put in. That cap is the difference between this and the first attempt.
  */
-/**
- * How much of each side of the sleeve fades out, from the setting's 0..1: from a thin fringe to the outer third of the cover.
- * The old fixed sixth was reported as hardly blurring the edges at all.
- */
-private fun featherFraction(amount: Float): Float = 0.10f + 0.30f * amount.coerceIn(0f, 1f)
-
-/** Fades all four edges of what it is drawn over to nothing, so the image melts into whatever is behind it. */
-private fun Modifier.featheredEdges(fraction: Float): Modifier = graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-    .drawWithContent {
-        drawContent()
-        val across = Brush.horizontalGradient(0f to Color.Transparent, fraction to Color.Black, 1f - fraction to Color.Black, 1f to Color.Transparent)
-        val down = Brush.verticalGradient(0f to Color.Transparent, fraction to Color.Black, 1f - fraction to Color.Black, 1f to Color.Transparent)
-        drawRect(brush = across, blendMode = BlendMode.DstIn)
-        drawRect(brush = down, blendMode = BlendMode.DstIn)
-    }
-
 @Composable
 private fun CoverColumn(
     viewModel: PlayerViewModel,
@@ -1058,6 +1040,11 @@ private fun CoverColumn(
 ) {
     val track = viewModel.uiCurrentTrack ?: return
 
+    val featherAmount by animateFloatAsState(
+        targetValue = if (showText && viewModel.fullPlayerCoverFeather) viewModel.fullPlayerCoverFeatherAmount else 0f,
+        animationSpec = tween(220),
+        label = "coverFeatherStrength",
+    )
     BoxWithConstraints {
         // The cap rises as the words leave, and incorporates user cover zoom factor
         val coverScale = viewModel.fullPlayerCoverScale
@@ -1098,7 +1085,7 @@ private fun CoverColumn(
                     )
                     .clip(coverShape)
                     // With the words beside it the sleeve's edges melt into the screen rather than stopping at a line.
-                    .then(if (showText && viewModel.fullPlayerCoverFeather) Modifier.featheredEdges(featherFraction(viewModel.fullPlayerCoverFeatherAmount)) else Modifier)
+                    .featheredArtwork(featherAmount)
                     // A hairline, so the sleeve's edge and corners read even when it is as dark as the wall.
                     .border(1.dp, Color.White.copy(alpha = 0.08f), coverShape)
                     .pointerInput(Unit) {

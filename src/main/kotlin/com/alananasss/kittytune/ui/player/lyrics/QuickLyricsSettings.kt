@@ -304,7 +304,7 @@ private fun DriftSync(viewModel: PlayerViewModel) {
         }
     }
     Spacer(Modifier.height(6.dp))
-    if (viewModel.duration >= com.alananasss.kittytune.data.LyricsSync.MIN_SPAN_MS) {
+    if (viewModel.uiDuration >= com.alananasss.kittytune.data.LyricsSync.MIN_SPAN_MS) {
         listOf(false, true).forEach { atEnd ->
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -315,7 +315,7 @@ private fun DriftSync(viewModel: PlayerViewModel) {
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier.weight(1f),
                 )
-                Text(format(sync.offsetAt(if (atEnd) viewModel.duration else 0L)), style = MaterialTheme.typography.labelMedium)
+                Text(format(sync.offsetAt(if (atEnd) viewModel.uiDuration else 0L)), style = MaterialTheme.typography.labelMedium)
                 IconButton(onClick = { viewModel.adjustLyricsSyncEndpoint(atEnd, -100L) }) {
                     Icon(Icons.Rounded.Remove, str("lyrics_sync_earlier"))
                 }

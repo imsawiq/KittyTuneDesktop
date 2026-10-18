@@ -235,10 +235,10 @@ fun TrackInfoTab(vm: PlayerViewModel) {
             // instead of at the panel edge (issue #33).
             Modifier.fillMaxSize(),
             state = listState,
-            verticalArrangement = Arrangement.spacedBy(if (isCompact) 12.dp else 18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = LIST_TOP_PADDING, bottom = LYRICS_BOTTOM_GAP)
         ) {
-            item {
+            item(key = "track_header") {
                 TrackInfoHeader(vm, displayTrack, isSpotifyTrack, isCompact, isUltraCompact, onCommentsClick)
             }
 
@@ -407,7 +407,7 @@ fun TrackInfoTab(vm: PlayerViewModel) {
             // Faded in and out with the switch to the lyrics and back, not only when they first appear.
             // Closer to its neighbours than the page's other blocks are: the list's gap suits sections, and between
             // comment cards it read as empty bands. The box reports a little less height, so the cards sit nearer.
-            val pullUp = if (isCompact) 6.dp else 10.dp
+            val pullUp = 6.dp
             Box(
                 Modifier.animateItem().layout { measurable, constraints ->
                     val placeable = measurable.measure(constraints)
@@ -961,44 +961,15 @@ private fun LazyListScope.trackTagsAndDetails(
             val hasGenre = !genre.isNullOrBlank()
 
             if (hasGenre) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    if (hasGenre) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable { vm.navigateToTag(genre) }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(
-                                    Icons.Rounded.MusicNote,
-                                    contentDescription = str("detail_genre"),
-                                    modifier = Modifier.size(14.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = genre,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
-                    }
-                }
+                SuggestionChip(
+                    onClick = { vm.navigateToTag(genre) },
+                    icon = {
+                        Icon(Icons.Rounded.MusicNote, contentDescription = str("detail_genre"), modifier = Modifier.size(16.dp))
+                    },
+                    label = { Text(genre, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                )
             }
-                
+
                 if (!displayTrack.tagList.isNullOrBlank()) {
                     val tags = parseTags(displayTrack.tagList)
                     if (tags.isNotEmpty()) {

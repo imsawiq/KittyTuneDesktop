@@ -2,6 +2,7 @@
 package com.alananasss.kittytune.ui.main
 
 import com.alananasss.kittytune.ui.home.searchSourceName
+import com.alananasss.kittytune.ui.home.search.ResponsiveSearchTopMatch
 import com.alananasss.kittytune.ui.common.rememberFilteredArtists
 import com.alananasss.kittytune.ui.common.rememberFilteredTracks
 
@@ -834,33 +835,34 @@ private fun SoundCloudResults(
             // ── ALL mode: grouped sections ──
             if (vm.activeFilter == SearchFilter.ALL) {
                 if (topArtist != null) {
-                    if (isNarrow) {
-                        item {
-                            SectionHeader(
-                                title = str("search_top_result"),
-                                icon = Icons.Rounded.Person,
-                                onSeeAll = { vm.onFilterChanged(SearchFilter.ARTISTS) }
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            SearchTopMatchHeroCard(
-                                user = topArtist,
-                                isSpotify = false,
-                                onArtistClick = {
-                                    vm.noteOpenedArtist(topArtist)
-                                    playerViewModel.navigateToPlaylistId = topArtist.profileNavId
-                                },
-                                onPlayClick = {
-                                    if (tracks.isNotEmpty()) {
-                                        playerViewModel.playPlaylist(tracks.toList(), 0)
-                                    } else {
+                    item(key = "top_match") {
+                        ResponsiveSearchTopMatch(
+                            narrow = isNarrow,
+                            hasTracks = tracks.isNotEmpty(),
+                            hero = {
+                                SectionHeader(
+                                    title = str("search_top_result"),
+                                    icon = Icons.Rounded.Person,
+                                    onSeeAll = { vm.onFilterChanged(SearchFilter.ARTISTS) }
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                SearchTopMatchHeroCard(
+                                    user = topArtist,
+                                    isSpotify = false,
+                                    onArtistClick = {
+                                        vm.noteOpenedArtist(topArtist)
                                         playerViewModel.navigateToPlaylistId = topArtist.profileNavId
+                                    },
+                                    onPlayClick = {
+                                        if (tracks.isNotEmpty()) {
+                                            playerViewModel.playPlaylist(tracks.toList(), 0)
+                                        } else {
+                                            playerViewModel.navigateToPlaylistId = topArtist.profileNavId
+                                        }
                                     }
-                                }
-                            )
-                        }
-                        if (tracks.isNotEmpty()) {
-                            item {
-                                Spacer(Modifier.height(14.dp))
+                                )
+                            },
+                            tracks = {
                                 SectionHeader(
                                     title = str("search_filter_tracks"),
                                     icon = Icons.Rounded.MusicNote,
@@ -870,55 +872,8 @@ private fun SoundCloudResults(
                                 tracks.take(4).forEach { track ->
                                     SearchTrackRow(track, playerViewModel, onOpened = { vm.noteOpenedTrack(track) })
                                 }
-                            }
-                        }
-                    } else {
-                        item {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                                horizontalArrangement = Arrangement.spacedBy(20.dp)
-                            ) {
-                                // Left: Top Match Hero Card
-                                Column(modifier = Modifier.weight(1f)) {
-                                    SectionHeader(
-                                        title = str("search_top_result"),
-                                        icon = Icons.Rounded.Person,
-                                        onSeeAll = { vm.onFilterChanged(SearchFilter.ARTISTS) }
-                                    )
-                                    Spacer(Modifier.height(6.dp))
-                                    SearchTopMatchHeroCard(
-                                        user = topArtist,
-                                        isSpotify = false,
-                                        onArtistClick = {
-                                            vm.noteOpenedArtist(topArtist)
-                                            playerViewModel.navigateToPlaylistId = topArtist.profileNavId
-                                        },
-                                        onPlayClick = {
-                                            if (tracks.isNotEmpty()) {
-                                                playerViewModel.playPlaylist(tracks.toList(), 0)
-                                            } else {
-                                                playerViewModel.navigateToPlaylistId = topArtist.profileNavId
-                                            }
-                                        }
-                                    )
-                                }
-
-                                // Right: Top Songs
-                                if (tracks.isNotEmpty()) {
-                                    Column(modifier = Modifier.weight(1.2f)) {
-                                        SectionHeader(
-                                            title = str("search_filter_tracks"),
-                                            icon = Icons.Rounded.MusicNote,
-                                            onSeeAll = { vm.onFilterChanged(SearchFilter.TRACKS) }
-                                        )
-                                        Spacer(Modifier.height(6.dp))
-                                        tracks.take(4).forEach { track ->
-                                            SearchTrackRow(track, playerViewModel, onOpened = { vm.noteOpenedTrack(track) })
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                            },
+                        )
                     }
 
                 // Remaining artists if any (excluding the selected top artist)
@@ -1155,32 +1110,33 @@ private fun ProviderResults(
         ) {
             if (vm.activeFilter == SearchFilter.ALL) {
                 if (topArtist != null) {
-                    if (isNarrow) {
-                        item {
-                            SectionHeader(
-                                title = str("search_top_result"),
-                                icon = Icons.Rounded.Person,
-                                onSeeAll = { vm.onFilterChanged(SearchFilter.ARTISTS) }
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            SearchTopMatchHeroCard(
-                                user = topArtist,
-                                isSpotify = false,
-                                onArtistClick = {
-                                    playerViewModel.navigateToPlaylistId = topArtist.urn ?: topArtist.id.toString()
-                                },
-                                onPlayClick = {
-                                    if (tracks.isNotEmpty()) {
-                                        playerViewModel.playPlaylist(tracks, 0)
-                                    } else {
+                    item(key = "top_match") {
+                        ResponsiveSearchTopMatch(
+                            narrow = isNarrow,
+                            hasTracks = tracks.isNotEmpty(),
+                            hero = {
+                                SectionHeader(
+                                    title = str("search_top_result"),
+                                    icon = Icons.Rounded.Person,
+                                    onSeeAll = { vm.onFilterChanged(SearchFilter.ARTISTS) }
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                SearchTopMatchHeroCard(
+                                    user = topArtist,
+                                    isSpotify = false,
+                                    onArtistClick = {
                                         playerViewModel.navigateToPlaylistId = topArtist.urn ?: topArtist.id.toString()
+                                    },
+                                    onPlayClick = {
+                                        if (tracks.isNotEmpty()) {
+                                            playerViewModel.playPlaylist(tracks, 0)
+                                        } else {
+                                            playerViewModel.navigateToPlaylistId = topArtist.urn ?: topArtist.id.toString()
+                                        }
                                     }
-                                }
-                            )
-                        }
-                        if (tracks.isNotEmpty()) {
-                            item {
-                                Spacer(Modifier.height(14.dp))
+                                )
+                            },
+                            tracks = {
                                 SectionHeader(
                                     title = str("search_filter_tracks"),
                                     icon = Icons.Rounded.MusicNote,
@@ -1190,52 +1146,8 @@ private fun ProviderResults(
                                 tracks.take(4).forEach { track ->
                                     SearchTrackRow(track, playerViewModel, onOpened = { vm.noteOpenedTrack(track) })
                                 }
-                            }
-                        }
-                    } else {
-                        item {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                                horizontalArrangement = Arrangement.spacedBy(20.dp)
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    SectionHeader(
-                                        title = str("search_top_result"),
-                                        icon = Icons.Rounded.Person,
-                                        onSeeAll = { vm.onFilterChanged(SearchFilter.ARTISTS) }
-                                    )
-                                    Spacer(Modifier.height(6.dp))
-                                    SearchTopMatchHeroCard(
-                                        user = topArtist,
-                                        isSpotify = false,
-                                        onArtistClick = {
-                                            playerViewModel.navigateToPlaylistId = topArtist.urn ?: topArtist.id.toString()
-                                        },
-                                        onPlayClick = {
-                                            if (tracks.isNotEmpty()) {
-                                                playerViewModel.playPlaylist(tracks, 0)
-                                            } else {
-                                                playerViewModel.navigateToPlaylistId = topArtist.urn ?: topArtist.id.toString()
-                                            }
-                                        }
-                                    )
-                                }
-
-                                if (tracks.isNotEmpty()) {
-                                    Column(modifier = Modifier.weight(1.2f)) {
-                                        SectionHeader(
-                                            title = str("search_filter_tracks"),
-                                            icon = Icons.Rounded.MusicNote,
-                                            onSeeAll = { vm.onFilterChanged(SearchFilter.TRACKS) }
-                                        )
-                                        Spacer(Modifier.height(6.dp))
-                                        tracks.take(4).forEach { track ->
-                                            SearchTrackRow(track, playerViewModel, onOpened = { vm.noteOpenedTrack(track) })
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                            },
+                        )
                     }
 
                 val remainingArtists = artists.filter { it.id != topArtist.id }
@@ -1615,34 +1527,35 @@ private fun SpotifyResults(
             // ── TOP MATCH / ARTISTS SECTION ──
             if (hasArtists && vm.activeFilter == SearchFilter.ALL) {
                 if (topSpotifyArtist != null) {
-                    if (isNarrow) {
-                        item {
-                            SectionHeader(
-                                title = str("search_top_result"),
-                                icon = Icons.Rounded.Person,
-                                onSeeAll = { vm.onFilterChanged(SearchFilter.ARTISTS) }
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            SearchTopMatchHeroCard(
-                                user = topSpotifyArtist,
-                                isSpotify = true,
-                                onArtistClick = {
-                                    val cleanId = topSpotifyArtist.permalink ?: topSpotifyArtist.urn?.removePrefix("spotify:artist:") ?: topSpotifyArtist.id.toString()
-                                    playerViewModel.navigateToPlaylistId = "spotify_artist:$cleanId"
-                                },
-                                onPlayClick = {
-                                    if (hasTracks) {
-                                        playerViewModel.playPlaylist(spotifyTracks, 0)
-                                    } else {
+                    item(key = "top_match") {
+                        ResponsiveSearchTopMatch(
+                            narrow = isNarrow,
+                            hasTracks = hasTracks,
+                            hero = {
+                                SectionHeader(
+                                    title = str("search_top_result"),
+                                    icon = Icons.Rounded.Person,
+                                    onSeeAll = { vm.onFilterChanged(SearchFilter.ARTISTS) }
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                SearchTopMatchHeroCard(
+                                    user = topSpotifyArtist,
+                                    isSpotify = true,
+                                    onArtistClick = {
                                         val cleanId = topSpotifyArtist.permalink ?: topSpotifyArtist.urn?.removePrefix("spotify:artist:") ?: topSpotifyArtist.id.toString()
                                         playerViewModel.navigateToPlaylistId = "spotify_artist:$cleanId"
+                                    },
+                                    onPlayClick = {
+                                        if (hasTracks) {
+                                            playerViewModel.playPlaylist(spotifyTracks, 0)
+                                        } else {
+                                            val cleanId = topSpotifyArtist.permalink ?: topSpotifyArtist.urn?.removePrefix("spotify:artist:") ?: topSpotifyArtist.id.toString()
+                                            playerViewModel.navigateToPlaylistId = "spotify_artist:$cleanId"
+                                        }
                                     }
-                                }
-                            )
-                        }
-                        if (hasTracks) {
-                            item {
-                                Spacer(Modifier.height(14.dp))
+                                )
+                            },
+                            tracks = {
                                 SectionHeader(
                                     title = str("search_filter_tracks"),
                                     icon = Icons.Rounded.MusicNote,
@@ -1652,56 +1565,8 @@ private fun SpotifyResults(
                                 spotifyTracks.take(4).forEach { track ->
                                     SearchTrackRow(track, playerViewModel, onOpened = { vm.noteOpenedTrack(track) })
                                 }
-                            }
-                        }
-                    } else {
-                        item {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                                horizontalArrangement = Arrangement.spacedBy(20.dp)
-                            ) {
-                                // Left: Top Match Artist Hero Card
-                                Column(modifier = Modifier.weight(1f)) {
-                                    SectionHeader(
-                                        title = str("search_top_result"),
-                                        icon = Icons.Rounded.Person,
-                                        onSeeAll = { vm.onFilterChanged(SearchFilter.ARTISTS) }
-                                    )
-                                    Spacer(Modifier.height(6.dp))
-                                    SearchTopMatchHeroCard(
-                                        user = topSpotifyArtist,
-                                        isSpotify = true,
-                                        onArtistClick = {
-                                            val cleanId = topSpotifyArtist.permalink ?: topSpotifyArtist.urn?.removePrefix("spotify:artist:") ?: topSpotifyArtist.id.toString()
-                                            playerViewModel.navigateToPlaylistId = "spotify_artist:$cleanId"
-                                        },
-                                        onPlayClick = {
-                                            if (hasTracks) {
-                                                playerViewModel.playPlaylist(spotifyTracks, 0)
-                                            } else {
-                                                val cleanId = topSpotifyArtist.permalink ?: topSpotifyArtist.urn?.removePrefix("spotify:artist:") ?: topSpotifyArtist.id.toString()
-                                                playerViewModel.navigateToPlaylistId = "spotify_artist:$cleanId"
-                                            }
-                                        }
-                                    )
-                                }
-
-                                // Right: Top Songs
-                                if (hasTracks) {
-                                    Column(modifier = Modifier.weight(1.2f)) {
-                                        SectionHeader(
-                                            title = str("search_filter_tracks"),
-                                            icon = Icons.Rounded.MusicNote,
-                                            onSeeAll = { vm.onFilterChanged(SearchFilter.TRACKS) }
-                                        )
-                                        Spacer(Modifier.height(6.dp))
-                                        spotifyTracks.take(4).forEach { track ->
-                                            SearchTrackRow(track, playerViewModel, onOpened = { vm.noteOpenedTrack(track) })
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                            },
+                        )
                     }
 
                 // Remaining artists if any (excluding the selected top artist)

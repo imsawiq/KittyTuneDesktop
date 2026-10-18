@@ -1,5 +1,8 @@
 package com.alananasss.kittytune.ui.main
 
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -74,7 +77,15 @@ internal fun TrackInfoHeader(
         (track.title == vm.uiCurrentTrack?.title && track.user?.username == vm.uiCurrentTrack?.user?.username)
     val animatedCoverUrl = if (isCurrentTrack) vm.currentAnimatedCoverUrl else null
 
-    Column(verticalArrangement = Arrangement.spacedBy(if (isCompact) 10.dp else 14.dp)) {
+    val compactCoverSize by animateDpAsState(
+        targetValue = if (isUltraCompact) 64.dp else 96.dp,
+        animationSpec = tween(180),
+        label = "trackInfoCompactCover",
+    )
+    Column(
+        modifier = Modifier.animateContentSize(animationSpec = tween(220)),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         if (isCompact) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -88,7 +99,7 @@ internal fun TrackInfoHeader(
                     isPlaying = vm.uiIsPlaying,
                     contentDescription = null,
                     modifier = Modifier
-                        .size(if (isUltraCompact) 64.dp else 96.dp)
+                        .size(compactCoverSize)
                         .clip(coverShape)
                         .viewableCover(track.fullResArtwork)
                 )

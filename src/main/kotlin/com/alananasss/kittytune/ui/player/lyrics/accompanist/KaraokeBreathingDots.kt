@@ -5,6 +5,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -15,9 +18,12 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
@@ -28,6 +34,8 @@ import kotlin.math.cos
 
 private val layerPaint = Paint()
 
+// The public name/defaults stay compatible with callers; the interlude now renders a musical note.
+
 data class KaraokeBreathingDotsDefaults(
     val number: Int = 3,
     val size: Dp = 16.dp,
@@ -36,7 +44,7 @@ data class KaraokeBreathingDotsDefaults(
     val preExitStillDuration: Int = 200,
     val preExitDipAndRiseDuration: Int = 3000,
     val exitDurationMs: Int = 200,
-    val breathingDotsColor: Color = Color.White
+    val breathingDotsColor: Color = Color.Unspecified
 )
 
 @Composable
@@ -49,6 +57,9 @@ fun KaraokeBreathingDots(
     defaults: KaraokeBreathingDotsDefaults = KaraokeBreathingDotsDefaults(),
 ) {
     val density = LocalDensity.current
+    val note = rememberVectorPainter(Icons.Rounded.MusicNote)
+    val noteColor = if (defaults.breathingDotsColor == Color.Unspecified)
+        MaterialTheme.colorScheme.onSurfaceVariant else defaults.breathingDotsColor
 
     val sizePx = remember(density, defaults.size) { with(density) { defaults.size.toPx() } }
     val marginPx = remember(density, defaults.margin) { with(density) { defaults.margin.toPx() } }
@@ -91,7 +102,7 @@ fun KaraokeBreathingDots(
                     height = defaults.size
                 )
         ) {
-            if (totalWidthPx <= 0f) return@Canvas
+            if (totalWidthPx <= 0f || sizePx <= 0f || endTimeMs <= startTimeMs) return@Canvas
 
             val currentTime = currentTimeProvider().toFloat()
             var scale: Float
@@ -140,29 +151,28 @@ fun KaraokeBreathingDots(
             drawIntoCanvas { canvas ->
                 canvas.saveLayer(Rect(Offset.Zero, Size(totalWidthPx, sizePx)), layerPaint)
 
+                // Keep the old interlude's footprint and align one note inside it. Its timing and
+                // transforms remain driven by the same audio clock, so pausing also pauses the breath.
+                val noteLeft = when (alignment) {
+                    KaraokeAlignment.Start -> 0f
+                    KaraokeAlignment.End -> totalWidthPx - sizePx
+                    KaraokeAlignment.Unspecified -> (totalWidthPx - sizePx) / 2f
+                }
                 withTransform({
-                    this.scale(scale = scale, pivot = Offset(totalWidthPx / 2f, sizePx / 2f))
+                    this.scale(scale = scale, pivot = Offset(noteLeft + sizePx / 2f, sizePx / 2f))
                 }) {
-                    repeat(defaults.number) { index ->
-                        val dotAlpha = if (timeline.breathingDuration > 0 && currentTime >= timeline.enterEnd) {
-                            val dotDuration = timeline.breathingDuration / defaults.number
-                            val dotStart = timeline.enterEnd + (index * dotDuration)
-                            ((currentTime - dotStart) / dotDuration).coerceIn(0f, 1f) * 0.6f + 0.4f
-                        } else {
-                            0.4f
+                    translate(left = noteLeft) {
+                        with(note) {
+                            draw(size = Size(sizePx, sizePx), alpha = alpha, colorFilter = ColorFilter.tint(noteColor))
                         }
-
-                        drawCircle(
-                            color = defaults.breathingDotsColor.copy(alpha = dotAlpha * alpha),
-                            radius = sizePx / 2,
-                            center = Offset(sizePx / 2 + (sizePx + marginPx) * index, sizePx / 2)
-                        )
                     }
                 }
 
                 val softEdgeWidth = 0.5f
                 val revealPos = revealProgress * (1f + softEdgeWidth)
                 val brush = Brush.horizontalGradient(
+                    startX = noteLeft,
+                    endX = noteLeft + sizePx,
                     colorStops = arrayOf(
                         0f to Color.Black,
                         (revealPos - softEdgeWidth).coerceIn(0f, 1f) to Color.Black,

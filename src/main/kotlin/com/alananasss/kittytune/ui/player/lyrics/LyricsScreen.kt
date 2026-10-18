@@ -4,8 +4,6 @@
 import com.alananasss.kittytune.ui.player.lyrics.timing.rememberSmoothPosition
 
 import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.ButtonGroupDefaults
-import androidx.compose.material3.ToggleButton
 
 import androidx.compose.material3.ButtonDefaults
     
@@ -28,7 +26,6 @@ import androidx.compose.ui.unit.min
     import androidx.compose.ui.input.pointer.PointerEventType
     import androidx.compose.ui.input.pointer.pointerInput
     import androidx.compose.ui.platform.LocalDensity
-    import androidx.compose.material.icons.rounded.Check
     import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
     import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
     import androidx.compose.foundation.rememberScrollState
@@ -39,8 +36,6 @@ import androidx.compose.ui.unit.min
     import androidx.compose.foundation.verticalScroll
     import androidx.compose.material.icons.Icons
     import androidx.compose.material.icons.rounded.Close
-    import androidx.compose.material.icons.rounded.Notes
-    import androidx.compose.material.icons.rounded.FilterCenterFocus
     import androidx.compose.material.icons.rounded.Add
     import androidx.compose.material.icons.rounded.ArrowDropDown
     import androidx.compose.material.icons.rounded.ContentCopy
@@ -130,8 +125,6 @@ import kotlin.math.roundToInt
         var showQuickSettingsDialog by remember { mutableStateOf(false) }
         var showUploadYamlDialog by remember { mutableStateOf(false) }
 
-        val hasSynced = viewModel.lyricsLines.any { it.startTime > 0 }
-        val hasPlain = !viewModel.rawPlainLyrics.isNullOrBlank()
 
         if (showQuickSettingsDialog) {
             QuickLyricsSettingsDialog(
@@ -253,7 +246,7 @@ import kotlin.math.roundToInt
                         }
                     } else {
                         AnimatedContent(
-                            targetState = viewModel.lyricsMode,
+                            targetState = if (viewModel.lyricsLines.isNotEmpty()) LyricsMode.SYNCED else LyricsMode.PLAIN,
                             transitionSpec = {
                                 fadeIn(animationSpec = tween(400)) + scaleIn(initialScale = 0.95f) togetherWith
                                         fadeOut(animationSpec = tween(300))
@@ -281,105 +274,9 @@ import kotlin.math.roundToInt
                             }
                         }
 
-                        if (hasSynced && hasPlain) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopCenter)
-                                    .padding(top = 16.dp)
-                                    .zIndex(10f)
-                            ) {
-                                LyricsModeSelector(
-                                    currentMode = viewModel.lyricsMode,
-                                    onModeSelected = { viewModel.lyricsMode = it },
-                                    hasSynced = hasSynced,
-                                    hasPlain = hasPlain
-                                )
-                            }
-                        }
                     }
                 }
             }
-        }
-    }
-    
-    @Composable
-    fun LyricsModeSelector(
-        currentMode: LyricsMode,
-        onModeSelected: (LyricsMode) -> Unit,
-        hasSynced: Boolean,
-        hasPlain: Boolean,
-        modifier: Modifier = Modifier
-    ) {
-        // Themed rather than hard-coded black and white: the hover effect came from Material and so
-        // already followed the palette, which is exactly why the buttons under it looked wrong
-        // (issue #33).
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-            shape = CircleShape,
-            modifier = modifier.height(38.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-        ) {
-            Row(
-                modifier = Modifier.padding(3.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (hasSynced) {
-                    LyricsModeChip(
-                        text = str("lyrics_mode_synced"),
-                        isSelected = currentMode == LyricsMode.SYNCED,
-                        onClick = { onModeSelected(LyricsMode.SYNCED) }
-                    )
-                }
-    
-                if (hasPlain) {
-                    LyricsModeChip(
-                        text = str("lyrics_mode_plain"),
-                        isSelected = currentMode == LyricsMode.PLAIN,
-                        onClick = { onModeSelected(LyricsMode.PLAIN) },
-                        enabled = hasPlain
-                    )
-                }
-            }
-        }
-    }
-    
-    @Composable
-    fun LyricsModeChip(
-        text: String,
-        isSelected: Boolean,
-        onClick: () -> Unit,
-        enabled: Boolean = true
-    ) {
-        val scheme = MaterialTheme.colorScheme
-        val backgroundColor by animateColorAsState(
-            targetValue = if (isSelected) scheme.primary else Color.Transparent,
-            animationSpec = tween(300),
-            label = "bgColor"
-        )
-        val textColor by animateColorAsState(
-            targetValue = when {
-                isSelected -> scheme.onPrimary
-                enabled -> scheme.onSurfaceVariant
-                else -> scheme.onSurfaceVariant.copy(alpha = 0.38f)
-            },
-            animationSpec = tween(300),
-            label = "textColor"
-        )
-    
-        Box(
-            modifier = Modifier
-                .clip(CircleShape)
-                .background(backgroundColor)
-                .clickable(enabled = enabled, onClick = onClick)
-                .padding(horizontal = 16.dp, vertical = 6.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = text,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = textColor
-            )
         }
     }
     

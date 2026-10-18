@@ -14,11 +14,12 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $source = Join-Path $repoRoot 'src\main\resources\native\WindowsSmtcBridge.cs'
+$audioSessionSource = Join-Path $repoRoot 'src\main\resources\native\WindowsAudioSessionNames.cs'
 $icon = Join-Path $repoRoot 'src\main\resources\icons\kittytune.ico'
 if (-not $OutDir) { $OutDir = Join-Path $repoRoot 'src\main\resources\native' }
 $outExe = Join-Path $OutDir 'WindowsSmtcBridge.exe'
 
-foreach ($required in @($source, $icon)) {
+foreach ($required in @($source, $audioSessionSource, $icon)) {
     if (-not (Test-Path $required)) { throw "Input not found: $required" }
 }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -145,7 +146,7 @@ Write-Host "Using System.Runtime.InteropServices.WindowsRuntime: $interop"
 Write-Host "Compiling WindowsSmtcBridge.cs (SDK $sdkVersion)"
 & $csc /nologo /target:winexe /platform:anycpu32bitpreferred `
     /win32icon:$icon /out:$outExe `
-    /r:$winmd /r:$projection /r:$interop /r:System.Runtime.dll $source
+    /r:$winmd /r:$projection /r:$interop /r:System.Runtime.dll $source $audioSessionSource
 if ($LASTEXITCODE -ne 0) { throw "csc failed with exit code $LASTEXITCODE" }
 if (-not (Test-Path $outExe)) { throw "csc reported success but $outExe is missing" }
 

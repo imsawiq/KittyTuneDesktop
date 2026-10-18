@@ -507,6 +507,7 @@ val compileWindowsSmtcBridge = tasks.register<Exec>("compileWindowsSmtcBridge") 
     enabled = desktopIsWindows
     val outDir = layout.buildDirectory.dir("generated/native-resources/native")
     inputs.files("scripts/build-smtc-bridge.ps1", "src/main/resources/native/WindowsSmtcBridge.cs",
+        "src/main/resources/native/WindowsAudioSessionNames.cs",
         "src/main/resources/icons/kittytune.ico")
     outputs.file(outDir.map { it.file("WindowsSmtcBridge.exe") })
     commandLine("powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",

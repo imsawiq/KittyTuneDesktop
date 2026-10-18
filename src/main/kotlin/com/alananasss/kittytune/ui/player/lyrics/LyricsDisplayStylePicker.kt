@@ -60,7 +60,7 @@ internal fun LyricsDisplayStylePicker(
 @Composable
 private fun StyleCard(style: LyricsDisplayStyle, isSelected: Boolean, onClick: () -> Unit, modifier: Modifier) {
     PreviewCard(title = str(style.labelKey), isSelected = isSelected, onClick = onClick, modifier = modifier) {
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerLowest)) { StylePreview(style) }
+        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainer)) { StylePreview(style) }
     }
 }
 

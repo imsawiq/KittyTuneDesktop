@@ -116,16 +116,16 @@ internal fun BackgroundSketch(style: FullPlayerBgStyle) {
     Canvas(Modifier.fillMaxSize()) {
         when (style) {
             FullPlayerBgStyle.APPLE_MUSIC -> {
-                drawRect(Color(0xFF15131A))
+                drawRect(scheme.surfaceContainer)
                 drawSoftBlob(Offset(size.width * 0.25f, size.height * 0.3f), size.minDimension * 0.6f, scheme.primary)
                 drawSoftBlob(Offset(size.width * 0.8f, size.height * 0.7f), size.minDimension * 0.6f, scheme.tertiary)
             }
             FullPlayerBgStyle.BLUR -> {
-                drawRect(Color(0xFF26262C))
+                drawRect(scheme.surfaceContainerHigh)
                 drawRect(Brush.radialGradient(listOf(scheme.primary.copy(alpha = 0.45f), Color.Transparent), center = center, radius = size.minDimension * 0.7f))
             }
             FullPlayerBgStyle.GRADIENT -> {
-                drawRect(Brush.verticalGradient(listOf(scheme.primary, Color(0xFF0B0B0F))))
+                drawRect(Brush.verticalGradient(listOf(scheme.primary, scheme.surfaceContainer)))
             }
             FullPlayerBgStyle.PURE_BLACK -> {
                 drawRect(Color.Black)
@@ -139,7 +139,7 @@ internal fun BackgroundSketch(style: FullPlayerBgStyle) {
 @Composable
 internal fun LayoutSketch(layout: FullPlayerLayout) {
     val scheme = MaterialTheme.colorScheme
-    Canvas(Modifier.fillMaxSize().background(scheme.surfaceContainerLowest)) {
+    Canvas(Modifier.fillMaxSize().background(scheme.surfaceContainer)) {
         val cover = scheme.primary.copy(alpha = 0.8f)
         val words = scheme.onSurfaceVariant.copy(alpha = 0.7f)
         val w = size.width

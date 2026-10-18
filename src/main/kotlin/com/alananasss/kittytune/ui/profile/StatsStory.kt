@@ -26,6 +26,7 @@ import com.alananasss.kittytune.core.str
 import com.alananasss.kittytune.data.stats.ListeningReport
 import com.alananasss.kittytune.data.stats.ReportArtist
 import com.alananasss.kittytune.data.stats.ReportPeriod
+import com.alananasss.kittytune.ui.profile.stats.readableRecapStops
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -53,7 +54,7 @@ internal fun StoryStats(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item(key = "summary", span = { GridItemSpan(maxLineSpan) }) {
-                StoryCard(Brush.linearGradient(listOf(scheme.primaryContainer, scheme.tertiaryContainer)), scheme.onPrimaryContainer, index = 0) {
+                StoryCard(listOf(scheme.primaryContainer, scheme.tertiaryContainer), scheme.onPrimaryContainer, index = 0) {
                     Text(str("stats_story_you_listened"), style = MaterialTheme.typography.titleMedium)
                     Text(
                         formatDurationShort(report.totalListenMs),
@@ -74,7 +75,7 @@ internal fun StoryStats(
             }
             report.topArtists.firstOrNull()?.let { artist ->
                 item(key = "artist") {
-                    StoryCard(Brush.linearGradient(listOf(scheme.secondaryContainer, scheme.primaryContainer)), scheme.onSecondaryContainer, index = 1) {
+                    StoryCard(listOf(scheme.secondaryContainer, scheme.primaryContainer), scheme.onSecondaryContainer, index = 1) {
                         Text(str("stats_story_top_artist"), style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(16.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -104,7 +105,7 @@ internal fun StoryStats(
             }
             report.topTracks.firstOrNull()?.let { track ->
                 item(key = "track") {
-                    StoryCard(Brush.linearGradient(listOf(scheme.tertiaryContainer, scheme.secondaryContainer)), scheme.onTertiaryContainer, index = 2) {
+                    StoryCard(listOf(scheme.tertiaryContainer, scheme.secondaryContainer), scheme.onTertiaryContainer, index = 2) {
                         Text(str("stats_story_top_track"), style = MaterialTheme.typography.titleMedium)
                         Spacer(Modifier.height(16.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -125,7 +126,7 @@ internal fun StoryStats(
             }
             report.peakHour?.let { hour ->
                 item(key = "time") {
-                    StoryCard(Brush.linearGradient(listOf(scheme.surfaceContainerHighest, scheme.primaryContainer)), scheme.onSurface, index = 3) {
+                    StoryCard(listOf(scheme.surfaceContainerHighest, scheme.primaryContainer), scheme.onSurface, index = 3) {
                         Text(str("stats_story_when"), style = MaterialTheme.typography.titleMedium)
                         Text(hourLabel(hour), style = MaterialTheme.typography.displayLarge.copy(fontSize = 64.sp, lineHeight = 70.sp), fontWeight = FontWeight.Black)
                         report.busiestWeekday?.let {
@@ -135,7 +136,7 @@ internal fun StoryStats(
                 }
             }
             item(key = "habits") {
-                StoryCard(Brush.linearGradient(listOf(scheme.primary, scheme.tertiary)), scheme.onPrimary, index = 4) {
+                StoryCard(listOf(scheme.primary, scheme.tertiary), scheme.onPrimary, index = 4) {
                     Text(str("stats_story_habits"), style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
@@ -159,7 +160,8 @@ private fun BigFigure(value: String, label: String) {
 
 /** One recap card: a gradient, big type, and a short rise-in as it first appears. */
 @Composable
-private fun StoryCard(background: Brush, contentColor: Color, index: Int, content: @Composable ColumnScope.() -> Unit) {
+private fun StoryCard(colors: List<Color>, contentColor: Color, index: Int, content: @Composable ColumnScope.() -> Unit) {
+    val background = remember(colors, contentColor) { Brush.linearGradient(readableRecapStops(colors, contentColor)) }
     val appear = remember { Animatable(0f) }
     LaunchedEffect(Unit) { appear.animateTo(1f, tween(420, delayMillis = 70 * index)) }
     Box(

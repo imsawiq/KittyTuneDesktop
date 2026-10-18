@@ -3008,7 +3008,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
     /** Edits either end of the song without seeking or changing the visible lyric. */
     fun adjustLyricsSyncEndpoint(atEnd: Boolean, amount: Long) {
-        val end = duration.takeIf { it >= com.alananasss.kittytune.data.LyricsSync.MIN_SPAN_MS }
+        val end = uiDuration.takeIf { it >= com.alananasss.kittytune.data.LyricsSync.MIN_SPAN_MS }
             ?: return
         val sync = lyricsSync
         val endpoints = com.alananasss.kittytune.data.LyricsSync(

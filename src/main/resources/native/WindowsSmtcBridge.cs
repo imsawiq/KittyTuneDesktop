@@ -9,7 +9,8 @@
 //   bridge -> app  READY | CMD:PLAY | CMD:PAUSE | CMD:NEXT | CMD:PREV | SEEK:<ms> | ERROR:<message>
 //
 // The app passes its own launcher path as argv[1]: that is what the Start Menu shortcut must point
-// at on a portable install, where no installer creates one.
+// at on a portable install, where no installer creates one. argv[2] is the parent JVM PID,
+// independently verified before its audio sessions receive an application display name.
 //
 // Build (from this directory, .NET Framework 4 csc + the Windows 10 SDK metadata; CI runs
 // scripts/build-smtc-bridge.ps1 so releases always carry a freshly compiled bridge, and the
@@ -83,16 +84,21 @@ namespace KittyTuneSmtc {
                 return 1;
             }
 
-            Send("READY");
-
-            string line;
-            while ((line = input.ReadLine()) != null) {
-                if (line == "QUIT") break;
-                if (!line.StartsWith("UPDATE\t")) continue;
-                try {
-                    Apply(line.Split('\t'));
-                } catch (Exception ex) {
-                    Send("ERROR:" + ex.Message);
+            int ownerPid;
+            if (args.Length < 2 || !Int32.TryParse(args[1], out ownerPid)) ownerPid = 0;
+            using (var audioNames = new WindowsAudioSessionNames(ownerPid, args.Length > 0 ? args[0] : null, Send)) {
+                Send("READY");
+                string line;
+                while ((line = input.ReadLine()) != null) {
+                    if (line == "QUIT") break;
+                    if (!line.StartsWith("UPDATE\t")) continue;
+                    try {
+                        var fields = line.Split('\t');
+                        Apply(fields);
+                        if (fields.Length >= 8) audioNames.Update(fields[5] == "1", fields[1], fields[2]);
+                    } catch (Exception ex) {
+                        Send("ERROR:" + ex.Message);
+                    }
                 }
             }
 
@@ -113,6 +119,7 @@ namespace KittyTuneSmtc {
             var worker = new Thread(delegate() {
                 try { EnsureStartMenuShortcut(mainExe); } catch (Exception ex) { failure = ex; }
             });
+            worker.IsBackground = true;
             worker.SetApartmentState(ApartmentState.STA);
             worker.Start();
             if (!worker.Join(3000)) {
@@ -139,13 +146,28 @@ namespace KittyTuneSmtc {
             foreach (string path in NamedShortcuts(menuDirs)) {
                 if (File.Exists(path) && PatchShortcut(path, launcher)) return;
             }
-            foreach (string path in AllStartMenuShortcuts(menuDirs)) {
-                if (PatchShortcut(path, launcher)) return;
+            if (launcher == null) {
+                // A dev JVM has no installable launcher identity. Do not resolve hundreds of unrelated
+                // shortcuts (network targets can stall COM); only inspect plausible KittyTune names.
+                foreach (string path in AllStartMenuShortcuts(menuDirs)) {
+                    if (path.IndexOf("Kitty", StringComparison.OrdinalIgnoreCase) < 0 &&
+                        path.IndexOf("Tune", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    if (PatchShortcut(path, null)) return;
+                }
+                return;
             }
-
-            if (launcher == null) return;
-            string created = Path.Combine(menuDirs[0], "KittyTune.lnk");
-            Directory.CreateDirectory(menuDirs[0]);
+            // A packaged launcher is sufficient to create the canonical identity immediately.
+            // Leave an unrelated same-named shortcut alone and choose another canonical location.
+            string created = null;
+            foreach (string candidate in new[] {
+                Path.Combine(menuDirs[0], "KittyTune.lnk"),
+                Path.Combine(menuDirs[0], "KittyTune", "KittyTune.lnk"),
+                Path.Combine(menuDirs[0], "KittyTune Desktop.lnk")
+            }) {
+                if (!File.Exists(candidate)) { created = candidate; break; }
+            }
+            if (created == null) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(created));
             var fresh = (IShellLinkW)new ShellLinkCoClass();
             fresh.SetPath(launcher);
             fresh.SetDescription("KittyTune");

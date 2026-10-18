@@ -58,7 +58,7 @@ class WindowsSmtcService(
         } ?: ProcessHandle.current().info().command().orElse(null)
             ?.takeIf { it.substringAfterLast('/').substringAfterLast('\\').equals("KittyTune.exe", ignoreCase = true) }
         val p = ProcessBuilder(
-            mutableListOf(exe.absolutePath).also { if (launcher != null) it.add(launcher) },
+            listOf(exe.absolutePath, launcher.orEmpty(), ProcessHandle.current().pid().toString()),
         ).redirectErrorStream(true).start()
         process = p
         writer = PrintWriter(p.outputStream.bufferedWriter(StandardCharsets.UTF_8), true)

@@ -510,6 +510,24 @@ fun main(args: Array<String>) {
                 } else false
             },
         ) {
+            var taskbarControls by remember { mutableStateOf<com.alananasss.kittytune.core.windows.WindowsTaskbarControls?>(null) }
+            androidx.compose.runtime.DisposableEffect(window) {
+                val controls = com.alananasss.kittytune.core.windows.WindowsTaskbarControls.attach(
+                    window,
+                    previous = playerViewModel::mprisPrevious,
+                    playPause = playerViewModel::togglePlayPause,
+                    next = playerViewModel::mprisNext,
+                )
+                taskbarControls = controls
+                onDispose { controls?.close(); taskbarControls = null }
+            }
+            val taskbarLabels = com.alananasss.kittytune.core.windows.TaskbarLabels(
+                str("player_previous"), str("btn_play"), str("action_pause"), str("player_next"),
+            )
+            androidx.compose.runtime.SideEffect {
+                taskbarControls?.update(playerViewModel.uiIsPlaying, playerViewModel.uiCurrentTrack != null, taskbarLabels)
+            }
+
             setSingletonImageLoaderFactory { ImageLoaderFactory.create() }
 
             androidx.compose.runtime.DisposableEffect(window) {

@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.ContainedLoadingIndicator
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,7 +34,6 @@ import com.alananasss.kittytune.core.str
  * The label is set in the lyrics font, at a lyric's weight, so the wait reads as part of the lyrics
  * view rather than a stray caption in the interface font (issue #66).
  */
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun LyricsSearchingIndicator(
     fontFamily: FontFamily,
@@ -51,7 +52,18 @@ internal fun LyricsSearchingIndicator(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        ContainedLoadingIndicator()
+        Icon(
+            imageVector = Icons.Rounded.MusicNote,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(48.dp).graphicsLayer {
+                alpha = labelAlpha
+                // The infinite transition follows Compose's motion duration scale, including zero.
+                val breath = 0.94f + (labelAlpha - 0.45f) / 0.45f * 0.06f
+                scaleX = breath
+                scaleY = breath
+            },
+        )
         Spacer(Modifier.height(if (large) 20.dp else 16.dp))
         Text(
             text = str("lyrics_searching"),
