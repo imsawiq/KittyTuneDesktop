@@ -276,8 +276,10 @@ object KaraokeManager {
     fun isModelReady(): Boolean {
         if (getOnnxModelFile() != null) return true
         val file = getModelFile()
-        return file.isFile && file.length() == MODEL_TOTAL_BYTES
+        return file.isFile && file.length() == MODEL_TOTAL_BYTES && getNativeDemucsBinary() != null
     }
+
+    fun getBinaryDownloadUrl(): String? = DemucsBinaryDownload.artifact()?.url
 
     /**
      * Extracts and returns the native demucs executable bundled with KittyTune.
@@ -390,10 +392,23 @@ object KaraokeManager {
             val temporary = Files.createTempFile(directory.toPath(), "htdemucs-", ".part").toFile()
             var call: okhttp3.Call? = null
             try {
+                val needsModel = !modelFinal.isFile || modelFinal.length() != MODEL_TOTAL_BYTES ||
+                    runCatching { HTDemucsModelIntegrity.requireValid(modelFinal) }.isFailure
                 val client = ProxyManager.getOkHttpClient().newBuilder()
                     .connectTimeout(30, TimeUnit.SECONDS)
                     .readTimeout(120, TimeUnit.SECONDS)
+                    .callTimeout(15, TimeUnit.MINUTES)
                     .followRedirects(true).followSslRedirects(true).build()
+                val binaryBytes = if (getNativeDemucsBinary() == null) {
+                    DemucsBinaryDownload.install(client, AppDirs.dataDir, modelDownloadCall) { received, total ->
+                        val overall = total + if (needsModel) MODEL_TOTAL_BYTES else 0L
+                        _downloadState.value = ModelDownloadState.Downloading(received.toFloat() / overall, received, overall)
+                    }
+                } else 0L
+                if (!needsModel) {
+                    _downloadState.value = ModelDownloadState.Ready
+                    return@launch
+                }
                 call = client.newCall(Request.Builder().url(DOWNLOAD_URL)
                     .header("User-Agent", "KittyTuneDesktop").build())
                 modelDownloadCall.set(call)
@@ -414,8 +429,9 @@ object KaraokeManager {
                                 downloaded += count
                                 require(downloaded <= MODEL_TOTAL_BYTES) { "HTDemucs model exceeds expected size" }
                                 output.write(buffer, 0, count)
+                                val overall = binaryBytes + MODEL_TOTAL_BYTES
                                 _downloadState.value = ModelDownloadState.Downloading(
-                                    downloaded.toFloat() / MODEL_TOTAL_BYTES, downloaded, MODEL_TOTAL_BYTES)
+                                    (binaryBytes + downloaded).toFloat() / overall, binaryBytes + downloaded, overall)
                             }
                         }
                     }
@@ -449,8 +465,7 @@ object KaraokeManager {
     }
 
     fun deleteModel() {
-        downloadJob?.cancel()
-        downloadJob = null
+        cancelModelDownload()
         cancelSeparation()
         synchronized(sessionLock) {
             runCatching { cachedSession?.close() }
@@ -491,6 +506,12 @@ object KaraokeManager {
                     tmpDir.delete()
                 }
             }
+        }
+        // 4. Clean up downloaded demucs native executable in binDir
+        val binDir = File(AppDirs.dataDir, "bin")
+        if (binDir.exists()) {
+            runCatching { File(binDir, "demucs").delete() }
+            runCatching { File(binDir, "demucs.exe").delete() }
         }
         checkModelStatus()
     }
@@ -1399,7 +1420,7 @@ object KaraokeManager {
         val selectedGpuId = prefs.karaokeSelectedGpuId
 
         OnnxHelper.ensureNativeLibrariesLoaded()
-        val env = OrtEnvironment.getEnvironment()
+        val env = OnnxHelper.getOrInitEnvironment()
         val session = getOrCreateSession(env, modelFile, useGpu, selectedGpuId)
         val originalPriority = Thread.currentThread().priority
         Thread.currentThread().priority = Thread.MIN_PRIORITY

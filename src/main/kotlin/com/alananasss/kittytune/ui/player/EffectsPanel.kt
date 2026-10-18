@@ -476,6 +476,7 @@ fun EffectsPanel(
             Spacer(Modifier.height(24.dp))
 
             // Special Effects Header
+            val activeCount = allEffects.count { it.isActive(viewModel.effectsState) }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -484,7 +485,6 @@ fun EffectsPanel(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    val activeCount = allEffects.count { it.isActive(viewModel.effectsState) }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             text = str("player_special_effects"),
@@ -511,6 +511,23 @@ fun EffectsPanel(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
                     )
+                }
+
+                if (activeCount > 0) {
+                    Tip(str("btn_reset")) {
+                        IconButton(
+                            onClick = { viewModel.resetAllEffects() },
+                            shapes = IconButtonDefaults.shapes(),
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.RestartAlt,
+                                contentDescription = str("btn_reset"),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
                 }
             }
 
