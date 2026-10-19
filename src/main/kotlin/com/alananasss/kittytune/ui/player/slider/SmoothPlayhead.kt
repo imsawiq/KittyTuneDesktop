@@ -90,25 +90,26 @@ internal class PlayheadClock {
     val isGliding: Boolean get() = glideFrom != null
 
     fun step(reported: Long, key: Any?, direct: Boolean, running: Boolean, now: Long): Long {
+        val safeReported = reported.coerceAtLeast(0L)
         if (key != lastKey || direct || now < lastFrameNanos) {
             lastKey = key
             glideFrom = null
-            snapTo(reported, now)
-            return reported
+            snapTo(safeReported, now)
+            return safeReported
         }
-        val frameMs = (now - lastFrameNanos).coerceAtLeast(0L) / 1_000_000.0
+        val frameMs = (now - lastFrameNanos).coerceIn(0L, 200_000_000L) / 1_000_000.0
         lastFrameNanos = now
         if (running) drawn += frameMs * rate
 
-        if (reported != lastReport) {
+        if (safeReported != lastReport) {
             val sinceReportMs = (now - lastReportNanos) / 1_000_000.0
-            val jumpedBack = reported < lastReport - 50
+            val jumpedBack = safeReported < lastReport - 50
             // While gliding, distance from the drawn bar is intentional. Ordinary playback
             // reports update the destination without restarting the same seek every 240 ms.
             val seek = jumpedBack || if (glideFrom != null) {
-                abs(reported - lastReport) > SEEK_THRESHOLD_MS
+                abs(safeReported - lastReport) > SEEK_THRESHOLD_MS
             } else {
-                abs(reported - drawn) > SEEK_THRESHOLD_MS
+                abs(safeReported - drawn) > SEEK_THRESHOLD_MS
             }
             if (seek) {
                 // A seek, a wheel notch, or a jump back: slide there from wherever the bar is.
@@ -116,12 +117,12 @@ internal class PlayheadClock {
                 glideAtNanos = now
             } else if (glideFrom == null) {
                 if (sinceReportMs in 80.0..1_000.0) {
-                    val observed = (reported - lastReport) / sinceReportMs
+                    val observed = (safeReported - lastReport) / sinceReportMs
                     if (observed in 0.2..4.5) rate += (observed - rate) * 0.25
                 }
-                drawn += (reported - drawn) * DRIFT_CORRECTION
+                drawn += (safeReported - drawn) * DRIFT_CORRECTION
             }
-            lastReport = reported
+            lastReport = safeReported
             lastReportNanos = now
         }
 
@@ -129,7 +130,7 @@ internal class PlayheadClock {
         if (from != null) {
             val t = ((now - glideAtNanos).toFloat() / SEEK_GLIDE_NANOS).coerceIn(0f, 1f)
             val aheadMs = (now - lastReportNanos).coerceIn(0L, MAX_RUN_AHEAD_MS * 1_000_000L) / 1_000_000.0
-            val target = reported + if (running) aheadMs * rate else 0.0
+            val target = safeReported + if (running) aheadMs * rate else 0.0
             if (t >= 1f) {
                 glideFrom = null
                 drawn = target
@@ -137,9 +138,9 @@ internal class PlayheadClock {
                 drawn = from + (target - from) * FastOutSlowInEasing.transform(t)
             }
         } else if (running) {
-            drawn = drawn.coerceAtMost(reported + MAX_RUN_AHEAD_MS * rate)
+            drawn = drawn.coerceAtMost(safeReported + MAX_RUN_AHEAD_MS * rate)
         } else {
-            drawn = reported.toDouble()
+            drawn = safeReported.toDouble()
         }
         return drawn.toLong().coerceAtLeast(0L)
     }
