@@ -16,11 +16,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,13 +51,11 @@ fun DraggablePinnedTilesGrid(
     var dragTouchOffsetInItem by remember { mutableStateOf(Offset.Zero) }
     var currentFingerPos by remember { mutableStateOf(Offset.Zero) }
 
-    LaunchedEffect(draggedId) {
-        onDragStateChanged(draggedId != null)
-    }
-
     val pinnedDefs = remember(currentOrder, allEffects) {
         currentOrder.mapNotNull { id -> allEffects.find { it.id == id } }
     }
+
+    PinnedEffectsDragNotification(pinnedDefs.any { it.id == draggedId }, onDragStateChanged)
 
     if (pinnedDefs.isEmpty()) {
         Box(
@@ -191,3 +190,13 @@ fun DraggablePinnedTilesGrid(
     }
 }
 
+
+/** Release the parent's scroll lock even if the grid disappears during a drag. */
+@Composable
+internal fun PinnedEffectsDragNotification(dragging: Boolean, onDragStateChanged: (Boolean) -> Unit) {
+    val notify by rememberUpdatedState(onDragStateChanged)
+    DisposableEffect(dragging) {
+        notify(dragging)
+        onDispose { notify(false) }
+    }
+}

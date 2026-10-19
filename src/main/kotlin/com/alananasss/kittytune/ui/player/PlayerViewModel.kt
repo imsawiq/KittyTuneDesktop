@@ -1315,6 +1315,16 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
     private var trimJob: Job? = null
     private var trimWatchJob: Job? = null
+    private var trimTransitionJob: Job? = null
+    private var trimTransitionRevision = 0L
+
+    private fun cancelTrimTransition() {
+        trimTransitionRevision++
+        trimTransitionJob?.cancel()
+        trimTransitionJob = null
+        trimJumpInProgress = false
+        player.trimGain = 1f
+    }
 
     /** Set while a trim jump is fading, so the watcher does not fire again mid-jump. */
     @Volatile
@@ -1322,6 +1332,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
     /** Loads the trim for [trackId], or clears it. Cheap enough to call on every track change. */
     private fun loadTrimFor(trackId: Long?) {
+        cancelTrimTransition()
         trimJob?.cancel()
         if (trackId == null) {
             currentTrim = com.alananasss.kittytune.audio.TrackTrim.none()
@@ -1335,6 +1346,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     /** Replaces the trim for the track playing now, and applies it immediately. */
     fun saveCurrentTrim(trim: com.alananasss.kittytune.audio.TrackTrim) {
         val trackId = currentTrack?.id ?: return
+        cancelTrimTransition()
         currentTrim = trim
         viewModelScope.launch {
             com.alananasss.kittytune.data.TrackTrimRepository.put(trackId, trim)
@@ -1346,6 +1358,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
 
     fun clearCurrentTrim() {
         val trackId = currentTrack?.id ?: return
+        cancelTrimTransition()
         currentTrim = com.alananasss.kittytune.audio.TrackTrim.none()
         viewModelScope.launch { com.alananasss.kittytune.data.TrackTrimRepository.remove(trackId) }
     }
@@ -1368,81 +1381,56 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    private suspend fun applyTrimNow() {
-        val trim = currentTrim
-        if (trim.isEmpty) return
-        when (val action = trim.actionFor(player.currentPosition, player.duration)) {
-            is com.alananasss.kittytune.audio.TrimAction.Continue -> Unit
-
-            is com.alananasss.kittytune.audio.TrimAction.JumpTo -> jumpWithFade(action.positionMs)
-
-            is com.alananasss.kittytune.audio.TrimAction.Finished -> {
-                // Treated as the track running out, so repeat, the queue and the listening statistics all see
-                // what they would have seen if the file itself had ended here.
-                trimJumpInProgress = true
-                try {
-                    fadeVolumeTo(0f)
-                    flushListenSession("PLAY_COMPLETE")
-                    playNext(manual = false)
-                } finally {
-                    player.volume = volume
+    private fun applyTrimNow() {
+        if (currentTrim.isEmpty || trimJumpInProgress) return
+        val action = currentTrim.actionFor(player.currentPosition, player.duration)
+        if (action is com.alananasss.kittytune.audio.TrimAction.Continue) return
+        val revision = ++trimTransitionRevision
+        trimJumpInProgress = true
+        trimTransitionJob = viewModelScope.launch {
+            try {
+                when (action) {
+                    is com.alananasss.kittytune.audio.TrimAction.Continue -> Unit
+                    is com.alananasss.kittytune.audio.TrimAction.JumpTo -> jumpWithFade(action.positionMs)
+                    is com.alananasss.kittytune.audio.TrimAction.Finished -> {
+                        fadeTrimGainTo(0f)
+                        flushListenSession("PLAY_COMPLETE")
+                        playNext(manual = false)
+                    }
+                }
+            } finally {
+                if (revision == trimTransitionRevision) {
+                    player.trimGain = 1f
                     trimJumpInProgress = false
+                    trimTransitionJob = null
                 }
             }
         }
     }
 
-    /**
-     * Seeks to [positionMs] with a short fade either side.
-     *
-     * The fade is the whole reason this sounds like an edit rather than a fault: a bare seek cuts the waveform
-     * mid-cycle and clicks.
-     *
-     * Measured on a real jump, the transition is about 316 ms end to end — 136 ms of true silence while the
-     * seek drains and re-primes the decoder, then the ramp back. Most of that is the seek's cost, not the
-     * fade's, and none of it is a hard edge. The earlier claim in this comment was ninety milliseconds, which
-     * was the ramp's own duration and not what anyone hears (issue #33).
-     */
+    /** Seeks with temporary attenuation, without changing the user's master volume. */
     private suspend fun jumpWithFade(positionMs: Long) {
-        trimJumpInProgress = true
-        try {
-            // A sleep-timer fade is already driving the volume; taking it over would leave the timer's own
-            // restore fighting ours. The jump still happens, just without the ramp.
-            val canFade = preFadeVolume == null
+        // Preserve the sleep timer's existing behavior: skip the trim ramp while its timer is armed.
+        val canFade = preFadeVolume == null
 
-            // Fading *out* of something nobody has heard yet is a stutter, not a transition. A trim that
-            // moves the start of the track fires within twenty milliseconds of playback beginning, and
-            // ramping down from there would make every play of the track open with a wobble. Fading back
-            // in still happens, which is what keeps the seek itself silent.
-            val fromTheTop = player.currentPosition < TRIM_SILENT_SEEK_MS
-            if (canFade && !fromTheTop) fadeVolumeTo(0f) else if (canFade) player.volume = 0f
-            player.seekTo(positionMs)
-            currentPosition = positionMs
-            listenSession?.onSeek(positionMs)
+        // Fading *out* of something nobody has heard yet is a stutter, not a transition. A trim that
+        // moves the start of the track fires within twenty milliseconds of playback beginning, and
+        // ramping down from there would make every play of the track open with a wobble. Fading back
+        // in still happens, which is what keeps the seek itself silent.
+        val fromTheTop = player.currentPosition < TRIM_SILENT_SEEK_MS
+        if (canFade && !fromTheTop) fadeTrimGainTo(0f) else if (canFade) player.trimGain = 0f
+        player.seekTo(positionMs)
+        currentPosition = positionMs
+        listenSession?.onSeek(positionMs)
 
-            // Waited for, not assumed. Measuring this on a real jump is what caught the bug: the seek
-            // drains and re-primes the decoder, so no audio comes out for roughly 120 ms — and a ramp on
-            // the wall clock finished during that silence. The volume was already back at full when the
-            // first sample returned, so the fade-in existed in the code and nowhere in the sound: the
-            // audio resumed at full level in a single frame, which is precisely the edge the fade was
-            // added to remove.
-            if (canFade) {
-                awaitPlaybackResumed()
-                fadeVolumeTo(volume)
-            }
-        } finally {
-            if (preFadeVolume == null) player.volume = volume
-            trimJumpInProgress = false
+        // Let the decoder finish its seek before restoring the attenuation.
+        if (canFade) {
+            awaitPlaybackResumed()
+            fadeTrimGainTo(1f)
         }
     }
 
-    /**
-     * Waits until the engine is actually producing audio again after a seek to [seekedToMs].
-     *
-     * "Producing audio" is read as the reported position having moved past where we seeked to. Bounded,
-     * because a seek that never completes — a dead stream URL, a stall — must not leave the track muted:
-     * past the deadline the fade runs anyway and the worst case is the hard edge we had before.
-     */
+    /** Bounds the decoder wait so a failed seek cannot leave playback attenuated indefinitely. */
     private suspend fun awaitPlaybackResumed() {
         val deadline = System.currentTimeMillis() + TRIM_RESUME_TIMEOUT_MS
         while (System.currentTimeMillis() < deadline) {
@@ -1452,15 +1440,15 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    private suspend fun fadeVolumeTo(target: Float) {
-        val from = player.volume
+    private suspend fun fadeTrimGainTo(target: Float) {
+        val from = player.trimGain
         val steps = TRIM_FADE_STEPS
         for (step in 1..steps) {
             val fraction = step.toFloat() / steps
-            player.volume = (from + (target - from) * fraction).coerceIn(0f, 1f)
+            player.trimGain = (from + (target - from) * fraction).coerceIn(0f, 1f)
             delay(TRIM_FADE_MS / steps)
         }
-        player.volume = target.coerceIn(0f, 1f)
+        player.trimGain = target.coerceIn(0f, 1f)
     }
 
     private var hasPushedRecentlyPlayed = false
@@ -4908,6 +4896,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
      */
     fun seekTo(position: Long) {
         if (routeRemote("seek", position)) { isScrubbing = false; return }
+        cancelTrimTransition()
         SyncPlayback.claimLocal()
         if (!applyingTogether && com.alananasss.kittytune.data.together.Together.active.value != null) {
             com.alananasss.kittytune.data.together.Together.control(com.alananasss.kittytune.data.together.TogetherMessage.CONTROL_SEEK, position)

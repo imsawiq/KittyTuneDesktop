@@ -45,4 +45,53 @@ class PlayerVolumeEnvelopeTest {
             player.release()
         }
     }
+
+    @Test
+    fun masterChangeDuringTrimFadeSurvivesRemainingTicksAndCleanup() {
+        val player = Player()
+        try {
+            player.volume = 0.8f
+            player.trimGain = 0.5f
+            player.volume = 0.4f
+            player.trimGain = 0.25f
+            assertEquals(0.4f, player.volume)
+            assertEquals(VolumeCurve.sliderToAmplitude(0.4f) * 0.25f, player.activeEngine.getVolume(), 0.0001f)
+            player.trimGain = 1f
+            assertEquals(0.4f, player.volume)
+            assertEquals(VolumeCurve.sliderToAmplitude(0.4f), player.activeEngine.getVolume(), 0.0001f)
+        } finally {
+            player.release()
+        }
+    }
+
+    @Test
+    fun trimAndCrossfadeMultiplyWithoutReplacingEachOther() {
+        val player = Player()
+        try {
+            player.volume = 0.7f
+            player.setFadeGains(0.5f, 0.5f)
+            player.trimGain = 0.4f
+            assertEquals(VolumeCurve.sliderToAmplitude(0.7f) * 0.5f * 0.4f, player.activeEngine.getVolume(), 0.0001f)
+            player.trimGain = 1f
+            assertEquals(VolumeCurve.sliderToAmplitude(0.7f) * 0.5f, player.activeEngine.getVolume(), 0.0001f)
+        } finally {
+            player.release()
+        }
+    }
+
+    @Test
+    fun unmutingDuringTrimFadeRestoresOnlyCurrentTrimGain() {
+        val player = Player()
+        try {
+            player.trimGain = 0.5f
+            player.volume = 0f
+            player.trimGain = 0.7f
+            assertEquals(0f, player.activeEngine.getVolume())
+            player.volume = 0.6f
+            assertEquals(VolumeCurve.sliderToAmplitude(0.6f) * 0.7f, player.activeEngine.getVolume(), 0.0001f)
+        } finally {
+            player.release()
+        }
+    }
+
 }

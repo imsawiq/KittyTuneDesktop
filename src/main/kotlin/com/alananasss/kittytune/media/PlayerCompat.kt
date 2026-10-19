@@ -318,21 +318,33 @@ class Player {
         set(value) {
             synchronized(volumeLock) {
                 field = if (value.isFinite()) value.coerceIn(0f, 1f) else 0f
-                applyFadeVolumes()
+                updateEngineVolume()
             }
         }
 
-    // Call under volumeLock so a slider update and a fade tick cannot overwrite each other.
-    private fun applyFadeVolumes() {
-        activeEngine.setVolume(volumeAmplitude * incomingFadeGain)
-        fadingEngine?.setVolume(volumeAmplitude * outgoingFadeGain)
+    /** Temporary attenuation for a trim seek; independent of the user's master volume. */
+    var trimGain: Float = 1f
+        set(value) {
+            synchronized(volumeLock) {
+                field = if (value.isFinite()) value.coerceIn(0f, 1f) else 1f
+                updateEngineVolume()
+            }
+        }
+
+    // The shared lock keeps slider changes and transition ticks from overwriting each other.
+    private fun updateEngineVolume() {
+        synchronized(volumeLock) {
+            val amplitude = volumeAmplitude * trimGain
+            activeEngine.setVolume(amplitude * incomingFadeGain)
+            fadingEngine?.setVolume(amplitude * outgoingFadeGain)
+        }
     }
 
     internal fun setFadeGains(incoming: Float, outgoing: Float) {
         synchronized(volumeLock) {
             incomingFadeGain = incoming
             outgoingFadeGain = outgoing
-            applyFadeVolumes()
+            updateEngineVolume()
         }
     }
 
@@ -454,7 +466,7 @@ class Player {
             } else {
                 activeEngine.clearTrackLoudness()
             }
-            activeEngine.setVolume(volumeAmplitude)
+            updateEngineVolume()
             activeEngine.setTrackGainDb(trackGainDb)
             activeEngine.setMediaItem(url, headers, startPositionMs, track?.id)
         } else {
@@ -807,7 +819,7 @@ class Player {
             fadingEngine?.release()
             fadingEngine = null
 
-            activeEngine.setVolume(volumeAmplitude)
+            updateEngineVolume()
             activeEngine.setTrackGainDb(trackGainDb)
             if (activeEngine.currentUrl != url) {
                 activeEngine.setMediaItem(url, headers, startPositionMs, currentMediaItem?.track?.id)
