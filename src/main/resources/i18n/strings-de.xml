@@ -2868,4 +2868,9 @@
     <string name="playlist_playing">Wiedergabe läuft</string>
     <string name="pref_depth_covers">Lebendiges Cover</string>
     <string name="pref_depth_covers_desc">Sanfte Bewegung zwischen Vorder- und Hintergrund. Verarbeitung auf deinem Gerät; einmaliger Download eines 64-MB-Modells.</string>
+    <string name="sort_custom">Eigene Reihenfolge</string>
+    <string name="music_import_likes_destination_header">Lieblingssongs importieren in</string>
+    <string name="music_import_likes_destination_library">KittyTune-Lieblingssongs</string>
+    <string name="music_import_likes_destination_playlist">Eine separate Playlist</string>
+    <string name="music_import_likes_destination_playlist_desc">Eine Playlist erstellen, ohne Titel zu den KittyTune-Lieblingssongs hinzuzufügen</string>
 </resources>

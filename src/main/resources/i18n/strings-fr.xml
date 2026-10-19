@@ -2650,4 +2650,9 @@
     <string name="playlist_playing">En lecture</string>
     <string name="pref_depth_covers">Pochette vivante</string>
     <string name="pref_depth_covers_desc">Un léger mouvement entre les plans. Traitement sur votre appareil ; modèle de 64 Mo téléchargé une seule fois.</string>
+    <string name="sort_custom">Ordre personnalisé</string>
+    <string name="music_import_likes_destination_header">Importer les titres favoris dans</string>
+    <string name="music_import_likes_destination_library">Titres favoris KittyTune</string>
+    <string name="music_import_likes_destination_playlist">Une playlist distincte</string>
+    <string name="music_import_likes_destination_playlist_desc">Créer une playlist sans ajouter les titres aux favoris KittyTune</string>
 </resources>

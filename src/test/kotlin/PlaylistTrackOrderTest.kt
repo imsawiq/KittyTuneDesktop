@@ -42,4 +42,13 @@ class PlaylistTrackOrderTest {
             assertEquals(emptyList(), sortPlaylistTracks(emptyList(), TrackSortBy.FIRST_ADDED, newestFirst))
         }
     }
+
+    @Test
+    fun `custom likes order remains separate when selecting chronological sorting`() {
+        val likes = listOf(track(3), track(2), track(1))
+        val custom = com.alananasss.kittytune.data.library.orderLikedTracks(likes, listOf(1, 3, 2))
+        assertEquals(listOf(1L, 3L, 2L), sortPlaylistTracks(custom, TrackSortBy.CUSTOM, true).map { it.id })
+        assertEquals(listOf(3L, 2L, 1L), sortPlaylistTracks(likes, TrackSortBy.RECENTLY_ADDED, true).map { it.id })
+        assertEquals(listOf(1L, 3L, 2L), sortPlaylistTracks(custom, TrackSortBy.CUSTOM, true).map { it.id })
+    }
 }

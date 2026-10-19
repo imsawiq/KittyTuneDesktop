@@ -2647,4 +2647,9 @@
     <string name="playlist_playing">Lejátszás</string>
     <string name="pref_depth_covers">Élő borító</string>
     <string name="pref_depth_covers_desc">Az előtér és a háttér finom mozgása. Feldolgozás az eszközön; a 64 MB-os modell egyszer töltődik le.</string>
+    <string name="sort_custom">Egyéni sorrend</string>
+    <string name="music_import_likes_destination_header">Kedvelt dalok importálásának helye</string>
+    <string name="music_import_likes_destination_library">KittyTune kedvelt dalok</string>
+    <string name="music_import_likes_destination_playlist">Külön lejátszási lista</string>
+    <string name="music_import_likes_destination_playlist_desc">Lejátszási lista létrehozása a dalok kedvelése nélkül a KittyTune-ban</string>
 </resources>

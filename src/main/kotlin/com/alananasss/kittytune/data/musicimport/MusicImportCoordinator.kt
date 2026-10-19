@@ -4,13 +4,19 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+enum class LikesImportDestination { LIKED_TRACKS, NEW_PLAYLIST }
+
 data class MusicTransferRequest(
     val platform: MusicApi,
     val userPlatformUuid: String,
     val playlistIds: List<String>,
     val importLikes: Boolean,
-    val likedTrackCount: Int = 0
-)
+    val likedTrackCount: Int = 0,
+    val likesDestination: LikesImportDestination = LikesImportDestination.LIKED_TRACKS
+) {
+    val importLikesAsPlaylists: Boolean
+        get() = importLikes && likesDestination == LikesImportDestination.NEW_PLAYLIST
+}
 
 /**
  * App-level bridge between the `soundcloud://musicapi/auth` deep link handled by

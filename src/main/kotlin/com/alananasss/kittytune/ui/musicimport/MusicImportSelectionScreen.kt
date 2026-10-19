@@ -24,6 +24,7 @@ import com.alananasss.kittytune.R
 import com.alananasss.kittytune.core.AppInstance
 import com.alananasss.kittytune.core.stringResource
 import com.alananasss.kittytune.data.musicimport.MusicImportGraphQL.ExternalPlaylist
+import com.alananasss.kittytune.data.musicimport.LikesImportDestination
 import com.alananasss.kittytune.ui.common.SettingsGroup
 import com.alananasss.kittytune.ui.common.SettingsItem
 import com.alananasss.kittytune.ui.common.SettingsScaffold
@@ -104,6 +105,34 @@ fun MusicImportSelectionScreen(
                                     )
                                 }
                             )
+                        )
+                    }
+
+                    if (viewModel.includeLikes && viewModel.likedTracksCount > 0) {
+                        SettingsGroup(
+                            title = stringResource(R.string.music_import_likes_destination_header),
+                            items = LikesImportDestination.entries.map { destination ->
+                                { shape ->
+                                    SettingsItem(
+                                        shape = shape,
+                                        title = stringResource(
+                                            if (destination == LikesImportDestination.LIKED_TRACKS)
+                                                R.string.music_import_likes_destination_library
+                                            else R.string.music_import_likes_destination_playlist
+                                        ),
+                                        subtitle = if (destination == LikesImportDestination.NEW_PLAYLIST) {
+                                            stringResource(R.string.music_import_likes_destination_playlist_desc)
+                                        } else null,
+                                        trailingContent = {
+                                            RadioButton(
+                                                selected = viewModel.likesDestination == destination,
+                                                onClick = null
+                                            )
+                                        },
+                                        onClick = { viewModel.selectLikesDestination(destination) }
+                                    )
+                                }
+                            }
                         )
                     }
 

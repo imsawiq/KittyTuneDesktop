@@ -124,7 +124,10 @@ class MusicImportTransferViewModel(application: Application) : AndroidViewModel(
             }
         }
         if (transfer.importLikes && !hasError) {
-            when (val result = repository.startLikesSync(transfer.userPlatformUuid, importAsPlaylists = false)) {
+            when (val result = repository.startLikesSync(
+                transfer.userPlatformUuid,
+                importAsPlaylists = transfer.importLikesAsPlaylists
+            )) {
                 is MusicImportResult.Success -> {
                     result.data.firstOrNull()?.let {
                         likesProgress = it.progressPercent

@@ -457,6 +457,7 @@ object LikeRepository {
         if (currentUserId != null) {
             val lastUserId = prefs.getLong("last_synced_user_id", -1L)
             if (lastUserId != -1L && lastUserId != currentUserId) {
+                com.alananasss.kittytune.data.library.LikedTrackOrder.shared.clear()
                 prefs.remove(KEY_LOCALLY_UNLIKED_IDS)
             }
             prefs.putLong("last_synced_user_id", currentUserId)
@@ -614,6 +615,7 @@ object LikeRepository {
     }
 
     fun clear() {
+        com.alananasss.kittytune.data.library.LikedTrackOrder.shared.clear()
         cachedUserId = null
         _likedTracks.value = emptyList()
         _likedPlaylists.value = emptySet()

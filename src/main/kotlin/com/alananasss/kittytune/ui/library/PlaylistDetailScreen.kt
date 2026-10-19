@@ -442,23 +442,45 @@ fun PlaylistDetailScreen(
     var playlistSortBy by remember(playlistId) {
         mutableStateOf(if (newestTracksFirst) TrackSortBy.RECENTLY_ADDED else TrackSortBy.FIRST_ADDED)
     }
+    val customLikesIds = if (playlistId == "likes") {
+        com.alananasss.kittytune.data.library.LikedTrackOrder.shared.ids.collectAsState().value
+    } else emptyList()
+    val customLikesSort = playlistId == "likes" && playlistSortBy == TrackSortBy.CUSTOM
+    var customLikesDirty by remember(playlistId) { mutableStateOf(false) }
+    DisposableEffect(playlistId) {
+        onDispose {
+            if (customLikesDirty) {
+                com.alananasss.kittytune.data.library.LikedTrackOrder.shared.persistInBackground()
+            }
+        }
+    }
 
     val listState = rememberLazyListState()
 
     val isSpecialPlaylist = playlistId == "likes" || playlistId == "downloads" || playlistId == "local_files" || playlistId.startsWith("liked_by:") || playlistId.startsWith("station") || playlistId.startsWith("system_playlist:")
 
-    // Drag-to-reorder — only active for user-owned playlists with no active search/sort
-    val canReorder = !isSpecialPlaylist && isUserCreated && playlistSearchQuery.isEmpty() && playlistSortBy == TrackSortBy.FIRST_ADDED
+    // Drag only in the editable native order, or the separate custom likes order, without a search.
+    val canReorder = playlistSearchQuery.isEmpty() && (customLikesSort ||
+        (!isSpecialPlaylist && isUserCreated && playlistSortBy == TrackSortBy.FIRST_ADDED))
     val reorderableState = rememberReorderableLazyListState(lazyListState = listState) { from, to ->
         if (canReorder) {
             val fromKey = from.key as? String
             val toKey = to.key as? String
             if (fromKey != null && toKey != null && fromKey != toKey) {
+              if (customLikesSort) {
+                val fromId = likedTracksRepo.firstOrNull { "${it.id}_dup0" == fromKey }?.id
+                val toId = likedTracksRepo.firstOrNull { "${it.id}_dup0" == toKey }?.id
+                if (fromId != null && toId != null) {
+                    com.alananasss.kittytune.data.library.LikedTrackOrder.shared.move(likedTracksRepo, fromId, toId)
+                    customLikesDirty = true
+                }
+              } else {
                 val fromIndex = tracks.indices.firstOrNull { i -> getPlaylistTrackStableKey(i, tracks[i].id, tracks) == fromKey } ?: -1
                 val toIndex = tracks.indices.firstOrNull { i -> getPlaylistTrackStableKey(i, tracks[i].id, tracks) == toKey } ?: -1
                 if (fromIndex != -1 && toIndex != -1 && fromIndex != toIndex) {
                     tracks.add(toIndex, tracks.removeAt(fromIndex))
                 }
+              }
             }
         }
     }
@@ -469,15 +491,24 @@ fun PlaylistDetailScreen(
     val isDragging = reorderableState.isAnyItemDragging
     var wasDragging by remember { mutableStateOf(false) }
     LaunchedEffect(isDragging) {
-        if (wasDragging && !isDragging && canReorder && currentIdLong != 0L) {
-            val newOrder = tracks.map { it.id }
-            DownloadManager.reorderPlaylistTracks(currentIdLong, newOrder)
-            DownloadManager.syncPlaylistOrderOnline(currentIdLong, newOrder)
+        if (wasDragging && !isDragging) {
+            if (customLikesDirty) {
+                customLikesDirty = false
+                com.alananasss.kittytune.data.library.LikedTrackOrder.shared.persist()
+            } else if (canReorder && currentIdLong != 0L) {
+                val newOrder = tracks.map { it.id }
+                DownloadManager.reorderPlaylistTracks(currentIdLong, newOrder)
+                DownloadManager.syncPlaylistOrderOnline(currentIdLong, newOrder)
+            }
         }
         wasDragging = isDragging
     }
 
-    val unfilteredTracks: List<Track> = if (playlistId == "likes") likedTracksRepo else tracks
+    val unfilteredTracks: List<Track> = when {
+        customLikesSort -> com.alananasss.kittytune.data.library.orderLikedTracks(likedTracksRepo, customLikesIds)
+        playlistId == "likes" -> likedTracksRepo
+        else -> tracks
+    }
     // Content filtering (issue #41): blocked tracks — and tracks of blocked
     // artists, via BlockManager.isBlocked — are hidden from every list below,
     // including the queue built from it. Uniform for likes too, by design.
@@ -1866,7 +1897,9 @@ fun PlaylistDetailScreen(
                                     Triple(TrackSortBy.RECENTLY_ADDED, str("sort_recently_added"), Icons.Rounded.ArrowDownward),
                                     Triple(TrackSortBy.TITLE_AZ, str("sort_title_az"), Icons.Rounded.SortByAlpha),
                                     Triple(TrackSortBy.ARTIST_AZ, str("sort_artist_az"), Icons.Rounded.Person),
-                                )
+                                ) + if (playlistId == "likes") listOf(
+                                    Triple(TrackSortBy.CUSTOM, str("sort_custom"), Icons.Rounded.Menu),
+                                ) else emptyList()
                                 com.alananasss.kittytune.ui.common.IconChoiceButton(
                                     options = sortOptions,
                                     selected = sortOptions.firstOrNull { it.first == playlistSortBy } ?: sortOptions.first(),

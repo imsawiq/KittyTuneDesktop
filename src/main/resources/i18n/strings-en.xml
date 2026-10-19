@@ -2648,4 +2648,9 @@
     <string name="playlist_playing">Playing</string>
     <string name="pref_depth_covers">Living artwork</string>
     <string name="pref_depth_covers_desc">Gentle motion between foreground and background. Processed on your device; a 64 MB model downloads once.</string>
+    <string name="sort_custom">Custom order</string>
+    <string name="music_import_likes_destination_header">Import liked songs into</string>
+    <string name="music_import_likes_destination_library">KittyTune liked songs</string>
+    <string name="music_import_likes_destination_playlist">A separate playlist</string>
+    <string name="music_import_likes_destination_playlist_desc">Create a playlist without adding tracks to KittyTune liked songs</string>
 </resources>

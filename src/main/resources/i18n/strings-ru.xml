@@ -2647,4 +2647,9 @@
     <string name="playlist_playing">Играет</string>
     <string name="pref_depth_covers">Живая обложка</string>
     <string name="pref_depth_covers_desc">Мягкое движение переднего и заднего планов. Обработка на устройстве; модель 64 МБ загружается один раз.</string>
+    <string name="sort_custom">Своя</string>
+    <string name="music_import_likes_destination_header">Куда импортировать любимые</string>
+    <string name="music_import_likes_destination_library">Любимые KittyTune</string>
+    <string name="music_import_likes_destination_playlist">Отдельный плейлист</string>
+    <string name="music_import_likes_destination_playlist_desc">Создать плейлист, не добавляя треки в любимые KittyTune</string>
 </resources>

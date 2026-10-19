@@ -9,6 +9,7 @@ import com.alananasss.kittytune.core.AppInstance
 import com.alananasss.kittytune.core.Application
 import com.alananasss.kittytune.data.musicimport.MusicApi
 import com.alananasss.kittytune.data.musicimport.MusicApiAuth
+import com.alananasss.kittytune.data.musicimport.LikesImportDestination
 import com.alananasss.kittytune.data.musicimport.MusicImportCoordinator
 import com.alananasss.kittytune.data.musicimport.MusicImportGraphQL.ExternalPlaylist
 import com.alananasss.kittytune.data.musicimport.MusicImportResult
@@ -36,6 +37,8 @@ class MusicImportSelectionViewModel(application: Application) : AndroidViewModel
     var selectedPlaylistIds by mutableStateOf(setOf<String>())
         private set
     var includeLikes by mutableStateOf(false)
+        private set
+    var likesDestination by mutableStateOf(LikesImportDestination.LIKED_TRACKS)
         private set
 
     var isLoading by mutableStateOf(false)
@@ -120,6 +123,10 @@ class MusicImportSelectionViewModel(application: Application) : AndroidViewModel
         includeLikes = !includeLikes
     }
 
+    fun selectLikesDestination(destination: LikesImportDestination) {
+        likesDestination = destination
+    }
+
     val isAllPlaylistsSelected: Boolean
         get() = playlists.isNotEmpty() && selectedPlaylistIds.size == playlists.size
 
@@ -146,7 +153,8 @@ class MusicImportSelectionViewModel(application: Application) : AndroidViewModel
                     userPlatformUuid = userPlatformUuid,
                     playlistIds = selected,
                     importLikes = includeLikes,
-                    likedTrackCount = if (includeLikes) likedTracksCount else 0
+                    likedTrackCount = if (includeLikes) likedTracksCount else 0,
+                    likesDestination = likesDestination
                 )
             )
             isImporting = false

@@ -2729,4 +2729,9 @@
     <string name="playlist_playing">Đang phát</string>
     <string name="pref_depth_covers">Ảnh bìa sống động</string>
     <string name="pref_depth_covers_desc">Chuyển động nhẹ giữa tiền cảnh và hậu cảnh. Xử lý trên thiết bị; mô hình 64 MB chỉ tải một lần.</string>
+    <string name="sort_custom">Thứ tự tùy chỉnh</string>
+    <string name="music_import_likes_destination_header">Nhập bài hát yêu thích vào</string>
+    <string name="music_import_likes_destination_library">Bài hát yêu thích KittyTune</string>
+    <string name="music_import_likes_destination_playlist">Danh sách phát riêng</string>
+    <string name="music_import_likes_destination_playlist_desc">Tạo danh sách phát mà không thêm bài hát vào mục yêu thích KittyTune</string>
 </resources>
