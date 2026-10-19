@@ -10,15 +10,33 @@ internal object WarmupQueue {
     data class Candidate(val track: Track, val energy: Float?, val bpm: Float?) {
         val intensity: Float get() {
             val measured = energy?.takeIf { it.isFinite() }?.coerceIn(0f, 1f)
-            val tags = "${track.genre.orEmpty()} ${track.tagList.orEmpty()}".lowercase()
-            val estimated = when {
-                listOf("ambient", "chill", "sleep", "piano", "lofi", "lo-fi").any(tags::contains) -> 0.2f
-                listOf("hardcore", "metal", "rage", "phonk", "dubstep", "hardstyle").any(tags::contains) -> 0.85f
-                else -> 0.5f
-            }
+            val estimated = estimateGenreIntensity(track.genre)
+                ?: estimateGenreIntensity(track.tagList)
+                ?: 0.5f
             val tempo = bpm?.takeIf { it.isFinite() && it > 0f }
                 ?.let { ((it - 60f) / 140f).coerceIn(0f, 1f) }
             return (measured ?: estimated) * 0.8f + (tempo ?: measured ?: estimated) * 0.2f
+        }
+    }
+
+    private val calmGenres = Regex(
+        "(?<![\\p{L}\\p{N}])(?:ambient|chill|sleep|piano|lofi|lo[- ]fi)(?![\\p{L}\\p{N}])",
+        RegexOption.IGNORE_CASE,
+    )
+    private val energeticGenres = Regex(
+        "(?<![\\p{L}\\p{N}])(?:hardcore|metal|rage|phonk|dubstep|hardstyle)(?![\\p{L}\\p{N}])",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private fun estimateGenreIntensity(value: String?): Float? {
+        if (value.isNullOrBlank()) return null
+        val calm = calmGenres.containsMatchIn(value)
+        val energetic = energeticGenres.containsMatchIn(value)
+        return when {
+            calm && energetic -> (0.2f + 0.85f) / 2f
+            calm -> 0.2f
+            energetic -> 0.85f
+            else -> null
         }
     }
 
@@ -28,7 +46,7 @@ internal object WarmupQueue {
         val count = limit.coerceAtMost(sorted.size)
         val selected = when {
             count == 0 -> emptyList()
-            count == 1 -> listOf(sorted.first())
+            count == 1 -> listOf(if (direction == Direction.RISING) sorted.first() else sorted.last())
             count == sorted.size -> sorted
             else -> (0 until count).map { index ->
                 sorted[(index.toDouble() * (sorted.lastIndex) / (count - 1)).roundToInt()]

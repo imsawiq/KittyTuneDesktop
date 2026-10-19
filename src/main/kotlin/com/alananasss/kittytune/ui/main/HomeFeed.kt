@@ -97,6 +97,11 @@ internal fun HomeFeed(
     }
     LaunchedEffect(Unit) { if (vm.chartPreview.isEmpty() && !vm.isChartPreviewLoading) vm.loadChartPreview() }
 
+    val recommendationSections = vm.homeSections.filterNot { it.title == str("home_from_your_artists") }
+    val vibeIndex = recommendationSections.indexOfLast {
+        SoundCloudLocalizationUtils.localizeSectionTitle(it.title) == str("home_habits_title")
+    }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 8.dp, bottom = 24.dp),
@@ -151,8 +156,6 @@ internal fun HomeFeed(
             item(key = "clips") { com.alananasss.kittytune.ui.profile.HomeClipsShelf(playerViewModel, homeClips) }
         }
 
-        item(key = "warmup") { com.alananasss.kittytune.ui.home.WarmupSection(playerViewModel) }
-
         if (vm.likedArtistUpdates.isNotEmpty() || vm.likedArtistReleaseRecords.isNotEmpty()) {
             item(key = "from_artists") { com.alananasss.kittytune.ui.home.FromYourArtistsSection(vm, playerViewModel) }
         }
@@ -161,59 +164,68 @@ internal fun HomeFeed(
             item(key = "mix") { Box(Modifier.padding(horizontal = HOME_PADDING)) { StartMixingCard(playerViewModel) } }
         }
 
-        items(vm.homeSections.filterNot { it.title == str("home_from_your_artists") }, key = { it.title }) { section ->
-            val visibleContent = remember(section.content, blockedTrackIds, blockedArtistIds) {
-                section.content.filter { item ->
-                    when (item) {
-                        is Track -> !BlockManager.isBlocked(item)
-                        is User -> !BlockManager.isArtistBlocked(item.id)
-                        else -> true
+        // With no listening-based vibe yet, keep creation available below the clips and other local shelves.
+        if (vibeIndex < 0) {
+            item(key = "warmup") { com.alananasss.kittytune.ui.home.WarmupSection(playerViewModel) }
+        }
+        recommendationSections.forEachIndexed { index, section ->
+            item(key = section.title) {
+                val visibleContent = remember(section.content, blockedTrackIds, blockedArtistIds) {
+                    section.content.filter { item ->
+                        when (item) {
+                            is Track -> !BlockManager.isBlocked(item)
+                            is User -> !BlockManager.isArtistBlocked(item.id)
+                            else -> true
+                        }
                     }
                 }
-            }
-            if (visibleContent.isNotEmpty()) {
-                Column {
-                    HomeShelfTitle(
-                        SoundCloudLocalizationUtils.localizeSectionTitle(section.title),
-                        SoundCloudLocalizationUtils.localizeSectionSubtitle(section.subtitle),
-                    )
-                    com.alananasss.kittytune.ui.common.ScrollableLazyRow(
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = HOME_PADDING),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        fadeColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                    ) {
-                        items(visibleContent) { item ->
-                            when (item) {
-                                is Track -> MediaCard(
-                                    title = item.title ?: "",
-                                    subtitle = item.displayArtist.ifBlank { item.user?.username.orEmpty() },
-                                    artworkUrl = item.fullResArtwork,
-                                    round = false,
-                                    onRightClick = { playerViewModel.showTrackOptions(item) }
-                                ) {
-                                    playerViewModel.playPlaylist(listOf(item), 0)
-                                }
-                                is Playlist -> MediaCard(
-                                    title = item.title ?: "",
-                                    subtitle = item.user?.username ?: "",
-                                    artworkUrl = item.fullResArtwork,
-                                    round = false,
-                                    onRightClick = { playerViewModel.showPlaylistOptions(item) }
-                                ) {
-                                    playerViewModel.navigateToPlaylistId = getStationNavId(item)
-                                }
-                                is User -> MediaCard(
-                                    title = item.username ?: "",
-                                    subtitle = str("lib_artists"),
-                                    artworkUrl = item.avatarUrl,
-                                    round = true,
-                                ) {
-                                    playerViewModel.navigateToPlaylistId = item.profileNavId
+                if (visibleContent.isNotEmpty()) {
+                    Column {
+                        HomeShelfTitle(
+                            SoundCloudLocalizationUtils.localizeSectionTitle(section.title),
+                            SoundCloudLocalizationUtils.localizeSectionSubtitle(section.subtitle),
+                        )
+                        com.alananasss.kittytune.ui.common.ScrollableLazyRow(
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = HOME_PADDING),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            fadeColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                        ) {
+                            items(visibleContent) { item ->
+                                when (item) {
+                                    is Track -> MediaCard(
+                                        title = item.title ?: "",
+                                        subtitle = item.displayArtist.ifBlank { item.user?.username.orEmpty() },
+                                        artworkUrl = item.fullResArtwork,
+                                        round = false,
+                                        onRightClick = { playerViewModel.showTrackOptions(item) }
+                                    ) {
+                                        playerViewModel.playPlaylist(listOf(item), 0)
+                                    }
+                                    is Playlist -> MediaCard(
+                                        title = item.title ?: "",
+                                        subtitle = item.user?.username ?: "",
+                                        artworkUrl = item.fullResArtwork,
+                                        round = false,
+                                        onRightClick = { playerViewModel.showPlaylistOptions(item) }
+                                    ) {
+                                        playerViewModel.navigateToPlaylistId = getStationNavId(item)
+                                    }
+                                    is User -> MediaCard(
+                                        title = item.username ?: "",
+                                        subtitle = str("lib_artists"),
+                                        artworkUrl = item.avatarUrl,
+                                        round = true,
+                                    ) {
+                                        playerViewModel.navigateToPlaylistId = item.profileNavId
+                                    }
                                 }
                             }
                         }
                     }
                 }
+            }
+            if (index == vibeIndex) {
+                item(key = "warmup") { com.alananasss.kittytune.ui.home.WarmupSection(playerViewModel) }
             }
         }
     }
