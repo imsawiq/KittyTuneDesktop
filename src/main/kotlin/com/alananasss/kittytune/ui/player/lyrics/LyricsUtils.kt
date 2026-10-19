@@ -40,6 +40,14 @@ data class LyricLine(
     val agent: String? = null
 )
 
+/** Authored words may ring beyond a rounded line end, including explicitly timed backing vocals. */
+internal val LyricLine.effectiveEndTime: Long
+    get() = maxOf(endTime, words.maxOfOrNull { it.endTime } ?: endTime)
+
+/** A rounded line timestamp must not hide an already singing word. */
+internal val LyricLine.effectiveStartTime: Long
+    get() = minOf(startTime, words.minOfOrNull { it.startTime } ?: startTime)
+
 fun isRtlText(text: String): Boolean {
     for (ch in text) {
         when (Character.getDirectionality(ch)) {
@@ -275,7 +283,7 @@ object LyricsUtils {
      * @return the line index, or -1 before the first line starts.
      */
     fun activeLineIndex(lines: List<LyricLine>, positionMs: Long): Int =
-        lines.indexOfLast { positionMs >= minOf(it.startTime, it.words.minOfOrNull { word -> word.startTime } ?: it.startTime) }
+        lines.indexOfLast { positionMs >= it.effectiveStartTime }
 
     /**
      * Where a click on [line] should move the playhead, or null when it should move nothing.
@@ -315,14 +323,15 @@ object LyricsUtils {
     fun insertInstrumentalBreaks(lines: List<LyricLine>): List<LyricLine> {
         if (lines.isEmpty()) return lines
         val result = mutableListOf<LyricLine>()
-        if (lines.first().startTime > 5000L) {
+        val firstStart = lines.first().effectiveStartTime
+        if (firstStart > 5000L) {
             result.add(
                 LyricLine(
                     text = "",
                     startTime = 0L,
-                    endTime = lines.first().startTime,
+                    endTime = firstStart,
                     isInstrumental = true,
-                    durationMs = lines.first().startTime
+                    durationMs = firstStart
                 )
             )
         }
@@ -331,13 +340,15 @@ object LyricsUtils {
             result.add(current)
             if (i < lines.size - 1) {
                 val next = lines[i + 1]
-                val gap = next.startTime - current.endTime
+                val sungEnd = current.effectiveEndTime
+                val nextStart = next.effectiveStartTime
+                val gap = nextStart - sungEnd
                 if (gap >= 4000L) {
                     result.add(
                         LyricLine(
                             text = "",
-                            startTime = current.endTime,
-                            endTime = next.startTime,
+                            startTime = sungEnd,
+                            endTime = nextStart,
                             isInstrumental = true,
                             durationMs = gap
                         )

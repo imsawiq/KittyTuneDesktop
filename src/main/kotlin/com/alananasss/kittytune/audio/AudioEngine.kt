@@ -1021,10 +1021,8 @@ class AudioEngine {
                 pushFrame(samples, frame.audioChannels)
                 drainStretcher(outBuf, localLine)
 
-                if (seekRequestMs == -1L) {
-                    val rawPos = (grabber?.timestamp ?: 0L) / 1000L
-                    positionMs = if (durationMs > 0L) rawPos.coerceIn(0L, durationMs) else rawPos.coerceAtLeast(0L)
-                }
+                val decodedPositionMs = (grabber?.timestamp ?: 0L) / 1000L
+                publishDecodedPosition(decodedPositionMs, readRevision)
             }
         } catch (t: Throwable) {
             if (!stopFlag && activeWorkerId == workerId) {
@@ -1037,6 +1035,16 @@ class AudioEngine {
             closeLineInstance(localLine)
         }
     }
+
+    /** A decoded frame cannot overwrite the target of a newer seek, even after that seek is consumed. */
+    internal fun publishDecodedPosition(decodedPositionMs: Long, readRevision: Long): Boolean =
+        synchronized(seekLock) {
+            if (readRevision != seekRevision || seekRequestMs >= 0L) return@synchronized false
+            positionMs = if (durationMs > 0L) {
+                decodedPositionMs.coerceIn(0L, durationMs)
+            } else decodedPositionMs.coerceAtLeast(0L)
+            true
+        }
 
     private var interleaveBuffer = ShortArray(0)
     private var decodeBuffer = FloatArray(0)

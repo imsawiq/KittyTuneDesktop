@@ -211,6 +211,7 @@ internal fun LyricLineText(
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val layerPaint = remember { Paint() }
     val keepPath = remember { Path() }
+    val effectiveEnd = remember(line) { line.effectiveEndTime }
     val ranges = remember(words) {
         var start = 0
         words.map { word ->
@@ -240,11 +241,11 @@ internal fun LyricLineText(
             modifier = fullWidth.drawWithContent {
                 val result = layout ?: return@drawWithContent
                 // Read here, in the draw phase: the frame-clock state write invalidates the draw
-                // only, not the composition. Clamped to this line's own end so the fill can only
-                // ever complete, never overrun and then snap back when the next line takes over.
+                // only, not the composition. Include authored word tails when the line's rounded
+                // end is shorter, so a sustained last word can finish filling.
                 val rawPosition = positionMs()
                 val position =
-                    if (line.endTime > line.startTime) rawPosition.coerceAtMost(line.endTime.toFloat())
+                    if (effectiveEnd > line.startTime) rawPosition.coerceAtMost(effectiveEnd.toFloat())
                     else rawPosition
                 val region = sungRegion(result, words, ranges, text.length, position)
                 // The bright copy is drawn in a layer and the part not sung yet rubbed out of it, with the playhead's
