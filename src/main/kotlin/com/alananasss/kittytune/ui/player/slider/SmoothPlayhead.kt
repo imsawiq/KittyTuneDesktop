@@ -103,11 +103,18 @@ internal class PlayheadClock {
         if (reported != lastReport) {
             val sinceReportMs = (now - lastReportNanos) / 1_000_000.0
             val jumpedBack = reported < lastReport - 50
-            if (jumpedBack || abs(reported - drawn) > SEEK_THRESHOLD_MS) {
+            // While gliding, distance from the drawn bar is intentional. Ordinary playback
+            // reports update the destination without restarting the same seek every 240 ms.
+            val seek = jumpedBack || if (glideFrom != null) {
+                abs(reported - lastReport) > SEEK_THRESHOLD_MS
+            } else {
+                abs(reported - drawn) > SEEK_THRESHOLD_MS
+            }
+            if (seek) {
                 // A seek, a wheel notch, or a jump back: slide there from wherever the bar is.
                 glideFrom = drawn
                 glideAtNanos = now
-            } else {
+            } else if (glideFrom == null) {
                 if (sinceReportMs in 80.0..1_000.0) {
                     val observed = (reported - lastReport) / sinceReportMs
                     if (observed in 0.2..4.5) rate += (observed - rate) * 0.25

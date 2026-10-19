@@ -41,6 +41,33 @@ class PlayheadClockTest {
         clock.step(170_000L, "a", direct = false, running = true, now = 0L)
         assertEquals(0L, clock.step(0L, "b", direct = false, running = true, now = frameNanos))
     }
+
+    @Test
+    fun `running backward seek finishes without restarting for ordinary position reports`() {
+        val clock = PlayheadClock()
+        clock.step(170_000L, "a", direct = false, running = true, now = 0L)
+        clock.step(0L, "a", direct = false, running = true, now = frameNanos)
+        var shown = 170_000L
+        for (frame in 2..21) {
+            // Playback resumes at zero and reports every 240 ms while the 280 ms glide runs.
+            val report = if (frame >= 16) 240L else 0L
+            shown = clock.step(report, "a", direct = false, running = true, now = frame * frameNanos)
+        }
+        assertTrue(shown in 240L..480L, "Normal reports must not restart the seek glide: $shown ms")
+        assertTrue(!clock.isGliding, "The 280 ms seek animation should already be complete")
+    }
+
+    @Test
+    fun `another seek during a glide starts a new glide to its own destination`() {
+        val clock = PlayheadClock()
+        clock.step(170_000L, "a", direct = false, running = false, now = 0L)
+        clock.step(0L, "a", direct = false, running = false, now = frameNanos)
+        clock.step(0L, "a", direct = false, running = false, now = 15 * frameNanos)
+        clock.step(60_000L, "a", direct = false, running = false, now = 16 * frameNanos)
+        clock.step(60_000L, "a", direct = false, running = false, now = 21 * frameNanos)
+        assertTrue(clock.isGliding, "A second seek must have its own animation, not finish with the first")
+        assertEquals(60_000L, clock.step(60_000L, "a", direct = false, running = false, now = 40 * frameNanos))
+    }
     @Test
     fun `a different clock origin cannot turn a paused end reset into hours`() {
         val clock = PlayheadClock()
