@@ -122,6 +122,7 @@ import com.alananasss.kittytune.data.local.PlayerPreferences
 import com.alananasss.kittytune.ui.common.Tip
 import com.alananasss.kittytune.ui.player.PlayerViewModel
 import com.alananasss.kittytune.ui.player.lyrics.LyricLine
+import com.alananasss.kittytune.ui.player.lyrics.effectiveEndTime
 import com.alananasss.kittytune.ui.player.lyrics.LyricWord
 import com.alananasss.kittytune.ui.player.lyrics.LyricsUtils
 import com.alananasss.kittytune.ui.theme.KittyTuneTheme
@@ -1394,6 +1395,8 @@ private fun MiniLyricDisplay(
                 )
             } else {
                 var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+                val fillPath = remember { Path() }
+                val lineEnd = remember(line) { line.effectiveEndTime }
 
                 Box {
                     Text(
@@ -1413,12 +1416,12 @@ private fun MiniLyricDisplay(
                             // Read in the draw phase: the per-frame position invalidates the draw
                             // only, clamped to the line's end so the fill completes, never overruns.
                             val rawPosition = positionMs()
-                            val position = if (line.endTime > line.startTime) {
-                                rawPosition.coerceAtMost(line.endTime.toFloat())
+                            val position = if (lineEnd > line.startTime) {
+                                rawPosition.coerceAtMost(lineEnd.toFloat())
                             } else {
                                 rawPosition
                             }
-                            clipPath(sungPath(res, chunkWords, ranges, chunkText.length, position)) {
+                            clipPath(sungPath(res, chunkWords, ranges, chunkText.length, position, fillPath)) {
                                 this@drawWithContent.drawContent()
                             }
                         }
@@ -1499,8 +1502,9 @@ private fun sungPath(
     ranges: List<Pair<Int, Int>>,
     textLength: Int,
     positionMs: Float,
+    path: Path,
 ): Path {
-    val path = Path()
+    path.rewind()
     val lastIndex = (textLength - 1).coerceAtLeast(0)
 
     for (i in words.indices) {

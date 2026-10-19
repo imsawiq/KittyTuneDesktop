@@ -13,7 +13,6 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -48,6 +47,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -240,69 +240,68 @@ private fun waveModeVisual(mode: WaveMode): Pair<ImageVector, String> = when (mo
  * the motion is the same, the waves are taller while music plays.
  */
 @Composable
-private fun WaveBackground(energy: Float, colors: List<Color>, modifier: Modifier = Modifier) {
+internal fun WaveBackground(energy: Float, colors: List<Color>, modifier: Modifier = Modifier) {
     val isSeen = com.alananasss.kittytune.core.LocalWindowSeen.current
-    val transition = rememberInfiniteTransition(label = "waveDrift")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(tween(WAVE_PERIOD_MS, easing = LinearEasing), RepeatMode.Restart),
-        label = "wavePhase",
-    )
-    // When the window is hidden, render a static phase (0f) instead of driving the Canvas at 60 fps
-    // for nobody. The wave is decorative — a static wave looks the same as a frozen one (audit
-    // Phase 3 CPU gain).
-    val effectivePhase = if (isSeen) phase else 0f
-    Canvas(modifier) {
+    // Removing the transition while hidden also stops its frame requests.
+    val phase = if (isSeen) {
+        val transition = rememberInfiniteTransition(label = "waveDrift")
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = (2 * PI).toFloat(),
+            animationSpec = infiniteRepeatable(tween(WAVE_PERIOD_MS, easing = LinearEasing), RepeatMode.Restart),
+            label = "wavePhase",
+        )
+    } else null
+    Box(modifier.drawWithCache {
         val w = size.width
         val h = size.height
-        colors.forEachIndexed { i, color ->
+        val crest = Path()
+        val body = Path()
+        val stroke = Stroke(width = 2f)
+        val fills = colors.mapIndexed { i, color ->
             val baseline = h * (0.62f + i * 0.1f)
             val amplitude = h * (0.06f + 0.05f * i) * (0.4f + energy)
-            val frequency = 1.2f + i * 0.45f
-            val shift = waveShift(effectivePhase, i)
-            fun crestY(x: Float) = baseline + amplitude * sin((x / w) * frequency * 2 * PI.toFloat() + shift)
-            // The crest alone gets the bright line; outlining the filled shape also drew its sides, two white
-            // bars down the card's edges.
-            val crest = Path().apply {
-                moveTo(0f, crestY(0f))
+            Brush.verticalGradient(
+                0f to color.copy(alpha = 0.22f + 0.1f * energy),
+                1f to color.copy(alpha = 0.04f),
+                startY = baseline - amplitude,
+                endY = h,
+            )
+        }
+        val glow = Offset(w - 24.dp.toPx() - PLAY_SIZE.toPx() / 2, 20.dp.toPx() + PLAY_SIZE.toPx() / 2)
+        val glowBrush = Brush.radialGradient(
+            listOf(colors.first().copy(alpha = 0.18f * (0.5f + energy)), Color.Transparent),
+            center = glow,
+            radius = h * 0.8f,
+        )
+        onDrawBehind {
+            // Reading the clock here invalidates drawing without recomposing or rebuilding shaders.
+            val effectivePhase = phase?.value ?: 0f
+            colors.forEachIndexed { i, color ->
+                val baseline = h * (0.62f + i * 0.1f)
+                val amplitude = h * (0.06f + 0.05f * i) * (0.4f + energy)
+                val frequency = 1.2f + i * 0.45f
+                val shift = waveShift(effectivePhase, i)
+                fun crestY(x: Float) = baseline + amplitude * sin((x / w) * frequency * 2 * PI.toFloat() + shift)
+                crest.rewind()
+                crest.moveTo(0f, crestY(0f))
                 var x = 6f
                 while (x < w) {
-                    lineTo(x, crestY(x))
+                    crest.lineTo(x, crestY(x))
                     x += 6f
                 }
-                lineTo(w, crestY(w))
+                crest.lineTo(w, crestY(w))
+                body.rewind()
+                body.addPath(crest)
+                body.lineTo(w, h)
+                body.lineTo(0f, h)
+                body.close()
+                drawPath(body, fills[i])
+                drawPath(crest, color.copy(alpha = 0.25f + 0.25f * energy), style = stroke)
             }
-            val body = Path().apply {
-                addPath(crest)
-                lineTo(w, h)
-                lineTo(0f, h)
-                close()
-            }
-            drawPath(
-                path = body,
-                brush = Brush.verticalGradient(
-                    0f to color.copy(alpha = 0.22f + 0.1f * energy),
-                    1f to color.copy(alpha = 0.04f),
-                    startY = baseline - amplitude,
-                    endY = h,
-                ),
-            )
-            drawPath(path = crest, color = color.copy(alpha = 0.25f + 0.25f * energy), style = Stroke(width = 2f))
+            drawCircle(glowBrush, radius = h * 0.8f, center = glow)
         }
-        // A glow behind the play button. It is placed from the card's edge, where the button is, not from a share of the
-        // width: at a wide window the share put it well to the left of the button.
-        val glow = Offset(w - 24.dp.toPx() - PLAY_SIZE.toPx() / 2, 20.dp.toPx() + PLAY_SIZE.toPx() / 2)
-        drawCircle(
-            brush = Brush.radialGradient(
-                listOf(colors.first().copy(alpha = 0.18f * (0.5f + energy)), Color.Transparent),
-                center = glow,
-                radius = h * 0.8f,
-            ),
-            radius = h * 0.8f,
-            center = glow,
-        )
-    }
+    })
 }
 
 /**

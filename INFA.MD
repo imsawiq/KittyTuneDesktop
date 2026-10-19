@@ -1,6 +1,6 @@
 # KittyTune — задачи и хендоф
 
-Обновлено: 19 октября 2026. Единый рабочий список запроса от 16–17 октября; старые TODO — исторический контекст.
+Обновлено: 20 октября 2026. Единый рабочий список запроса от 16–17 октября; старые TODO — исторический контекст.
 
 ## Как продолжать
 
@@ -12,6 +12,15 @@
 - Не заявлять достижение 300–400 МБ, превосходство автомикса или бесплатную генерацию ИИ без измерений/проверенного сервиса.
 
 ## Текущий хендоф
+
+**Продолжение 20 октября, новый блок проверен сборкой и тестами:** предыдущий проверенный `d012362` отправлен в fork/tester-fixes (1239/0/14). После прерывания восстановлены незавершённые изменения; пользовательские banner PNG не трогать. Текущий Computer Use native pipe снова unavailable; alternate Windows automation не использовать.
+
+- 10: зеркало GitHub `PoHsuanLai/dawai-htdemucs-weights/releases/download/v1/htdemucs.safetensors` реально скачано в `scratch/verify-htdemucs-mirror.safetensors`: **84 030 696 байт, SHA256 8193504cdfb3943adaf039b8acb524a46e87ebf232c383ac7a32c80a6578423e**, полностью совпадает с существующим pin HF. Новый HTDemucsModelDownload и manager integration: bounded primary→mirror, целостность временного файла, прежний atomic move, немедленная отмена HTTP. Модель также установлена без перезаписи существующего файла в стандартный `LocalAppData/demucs-rs/htdemucs.safetensors`; размер/хеш перепроверены (`scratch/verify-demucs-runtime/model-install.json`). Это единственное изменение реального app cache, настройки/данные аккаунта не менялись. Семь локальных HTTP-регрессий прошли в 107 узких тестах; реальное разделение собственного короткого WAV ещё следующее. Не считать этот пункт завершённым по одному скачанному файлу.
+- 22: найден реальный missing integration: prebuffer проверял только trackId и мог принять PCM, подготовленный с plan=null, когда новый beat/tempo/start план уже появился. Player теперь проверяет start/tempo/pitch и пересоздаёт несовместимый buffer; только после успешного актуального PCM write начинается fade. Добавлены readiness и generation/ownership guards, пять поведенческих тестов. Шесть новых поведенческих регрессий прошли в узком прогоне; проверка настоящего перехода ещё требуется.
+- 6: настоящий процесс старого JAR на QA-профиле дал **422MB working /436MB private через23с**, **670.2MB working/704.3MB private через95с**. NMT300MB committed, heap100MB committed/63.4MB used, ONNX не загружен. `scratch/verify-memory-oct19-baseline.json`, `-native.txt`, `-heap.txt`, `-histogram.txt`. 56 920 Skia cleaner wrappers, 12 058 Path и 3 997 Shader (histogram -all включает мусор). Главная видимая полка MyWave на каждом кадре строила шесть Compose Path и четыре градиента; теперь пути и кисти кэшируются drawWithCache, clock читается только в draw, скрытая анимация удаляется из composition. Также shader FluidArtworkBackground освобождается каждый кадр и сбрасывается paint.shader; пути lyrics/mini/sliders переиспользуются. Эффект на память ещё НЕ измерен.
+- 17: мини-плеер имел тот же clamp по declared line.end вместо окончания последнего слова; переведён на effectiveEndTime. Проверка backward seek дополняет растровую регрессию — переиспользуемый путь должен очищаться.
+
+Root — единственный владелец Gradle. QA-приложение не запущено. `scratch/verify-automix-download-memory-main.log` — BUILD SUCCESSFUL за 3м36с. `scratch/verify-automix-download-memory-tests.log` — **107 тестов, 0 failures/errors/skipped, 16 классов**, BUILD SUCCESSFUL за 1м30с. `scratch/verify-automix-download-memory-full-tests.log` — **1253 теста, 0 failures/errors, 14 skipped, 239 классов**, BUILD SUCCESSFUL за 2м13с. Сейчас реальный CLI HTDemucs на собственном 2-секундном WAV (`scratch/verify-demucs-runtime/cli.log`, лимит180с, выбран Intel UHD), затем повторное измерение QA памяти. Во время :verifyRun новый Gradle не запускать. Не применять -x jar/-x compileKotlin до успешной новой сборки.
 
 **Актуально после последнего прогона:** JAR собран, **1239 тестов, 0 failures/errors, 14 skipped**; последние изменения 17/53 готовы к сохранению вместе с этим хендофом. Gradle/QA-приложение больше не запущены. Изменения пользовательских banner PNG не затронуты. Весь список ещё не завершён: визуальная проверка изменений требует восстановления Computer Use (native pipe unavailable); HTDemucs не скачивается с CDN; цель RAM 300–400МБ и бесшовная обрезка/автомикс со стемами не доказаны/не завершены. Не заменять эти проверки чтением исходников и не зачёркивать частичные пункты.
 

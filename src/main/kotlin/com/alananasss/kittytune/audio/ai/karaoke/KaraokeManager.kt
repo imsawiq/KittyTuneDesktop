@@ -31,7 +31,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.yield
-import okhttp3.Request
 import org.bytedeco.javacv.FFmpegFrameGrabber
 import org.bytedeco.javacv.FrameGrabber
 import java.io.BufferedReader
@@ -59,7 +58,7 @@ object KaraokeManager {
     const val MODEL_TOTAL_BYTES = HTDemucsModelIntegrity.SIZE
 
     const val DOWNLOAD_URL = HTDemucsModelIntegrity.URL
-    val FALLBACK_URLS = emptyList<String>()
+    val FALLBACK_URLS = listOf(HTDemucsModelIntegrity.MIRROR_URL)
     private val modelDownloadCall = java.util.concurrent.atomic.AtomicReference<okhttp3.Call?>(null)
 
 
@@ -390,7 +389,6 @@ object KaraokeManager {
             val modelFinal = getModelFile()
             val directory = requireNotNull(modelFinal.parentFile).apply { mkdirs() }
             val temporary = Files.createTempFile(directory.toPath(), "htdemucs-", ".part").toFile()
-            var call: okhttp3.Call? = null
             try {
                 val needsModel = !modelFinal.isFile || modelFinal.length() != MODEL_TOTAL_BYTES ||
                     runCatching { HTDemucsModelIntegrity.requireValid(modelFinal) }.isFailure
@@ -409,34 +407,12 @@ object KaraokeManager {
                     _downloadState.value = ModelDownloadState.Ready
                     return@launch
                 }
-                call = client.newCall(Request.Builder().url(DOWNLOAD_URL)
-                    .header("User-Agent", "KittyTuneDesktop").build())
-                modelDownloadCall.set(call)
-                kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                call.execute().use { response ->
-                    require(response.isSuccessful) { "HTTP ${response.code} downloading HTDemucs model" }
-                    val body = response.body
-                    val responseLength = body.contentLength()
-                    require(responseLength < 0 || responseLength == MODEL_TOTAL_BYTES) { "Unexpected HTDemucs model size" }
-                    var downloaded = 0L
-                    temporary.outputStream().buffered().use { output ->
-                        body.byteStream().use { input ->
-                            val buffer = ByteArray(64 * 1024)
-                            while (true) {
-                                kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                downloaded += count
-                                require(downloaded <= MODEL_TOTAL_BYTES) { "HTDemucs model exceeds expected size" }
-                                output.write(buffer, 0, count)
-                                val overall = binaryBytes + MODEL_TOTAL_BYTES
-                                _downloadState.value = ModelDownloadState.Downloading(
-                                    (binaryBytes + downloaded).toFloat() / overall, binaryBytes + downloaded, overall)
-                            }
-                        }
+                HTDemucsModelDownload(client, listOf(DOWNLOAD_URL) + FALLBACK_URLS)
+                    .download(temporary, modelDownloadCall) { downloaded ->
+                        val overall = binaryBytes + MODEL_TOTAL_BYTES
+                        _downloadState.value = ModelDownloadState.Downloading(
+                            (binaryBytes + downloaded).toFloat() / overall, binaryBytes + downloaded, overall)
                     }
-                }
-                HTDemucsModelIntegrity.requireValid(temporary)
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 try {
                     Files.move(temporary.toPath(), modelFinal.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
@@ -450,7 +426,6 @@ object KaraokeManager {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 _downloadState.value = ModelDownloadState.Error(error.message ?: "HTDemucs download failed")
             } finally {
-                modelDownloadCall.compareAndSet(call, null)
                 temporary.delete()
             }
         }

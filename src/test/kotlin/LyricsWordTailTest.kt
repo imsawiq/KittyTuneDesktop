@@ -44,6 +44,9 @@ class LyricsWordTailTest {
             position.floatValue = 3_900f
             val late = brightness()
             assertTrue(late > early * 2, "A held final word must continue filling after the line's rounded end")
+            position.floatValue = 2_000f
+            val rewound = brightness()
+            assertEquals(early, rewound, 1.0, "A backward seek must clear the reused fill path")
         } finally {
             scene.close()
         }

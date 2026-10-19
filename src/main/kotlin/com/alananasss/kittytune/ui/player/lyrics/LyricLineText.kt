@@ -211,6 +211,7 @@ internal fun LyricLineText(
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val layerPaint = remember { Paint() }
     val keepPath = remember { Path() }
+    val sungPath = remember { Path() }
     val effectiveEnd = remember(line) { line.effectiveEndTime }
     val ranges = remember(words) {
         var start = 0
@@ -247,7 +248,7 @@ internal fun LyricLineText(
                 val position =
                     if (effectiveEnd > line.startTime) rawPosition.coerceAtMost(effectiveEnd.toFloat())
                     else rawPosition
-                val region = sungRegion(result, words, ranges, text.length, position)
+                val region = sungRegion(result, words, ranges, text.length, position, sungPath)
                 // The bright copy is drawn in a layer and the part not sung yet rubbed out of it, with the playhead's
                 // edge fading instead of cut straight: the same soft fill the full screen's karaoke has.
                 drawIntoCanvas { canvas ->
@@ -291,8 +292,9 @@ private fun sungRegion(
     ranges: List<Pair<Int, Int>>,
     textLength: Int,
     positionMs: Float,
+    path: Path,
 ): SungRegion {
-    val path = Path()
+    path.rewind()
     val lastIndex = (textLength - 1).coerceAtLeast(0)
     var band: Rect? = null
 

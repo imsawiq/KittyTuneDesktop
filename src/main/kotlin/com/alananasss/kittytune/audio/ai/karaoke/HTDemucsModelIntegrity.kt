@@ -8,6 +8,8 @@ internal object HTDemucsModelIntegrity {
     const val SIZE = 84_030_696L
     const val SHA256 = "8193504cdfb3943adaf039b8acb524a46e87ebf232c383ac7a32c80a6578423e"
     const val URL = "https://huggingface.co/set-soft/audio_separation/resolve/939723568b2dca203e61cc7294317ba38549964f/Demucs/htdemucs.safetensors"
+    // Independently hosted copy; the pinned size and SHA-256 apply to both sources.
+    const val MIRROR_URL = "https://github.com/PoHsuanLai/dawai-htdemucs-weights/releases/download/v1/htdemucs.safetensors"
 
     fun requireValid(file: File) {
         require(file.isFile && file.length() == SIZE) { "HTDemucs model download is incomplete" }

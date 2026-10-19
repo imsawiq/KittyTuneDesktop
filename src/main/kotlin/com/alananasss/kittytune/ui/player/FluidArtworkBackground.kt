@@ -362,12 +362,17 @@ private suspend fun loadTexture(url: String): FluidTexture? = withContext(Dispat
 
     val texture = runCatching {
         val image = Image.makeFromBitmap(bitmap)
-        FluidTexture(
-            image = image,
-            shader = image.makeShader(FilterTileMode.CLAMP, FilterTileMode.CLAMP, SamplingMode.LINEAR),
-            width = image.width.toFloat(),
-            height = image.height.toFloat(),
-        )
+        try {
+            FluidTexture(
+                image = image,
+                shader = image.makeShader(FilterTileMode.CLAMP, FilterTileMode.CLAMP, SamplingMode.LINEAR),
+                width = image.width.toFloat(),
+                height = image.height.toFloat(),
+            )
+        } catch (failure: Throwable) {
+            runCatching { image.close() }
+            throw failure
+        }
     }.getOrNull() ?: return@withContext null
 
     synchronized(textureCache) {
@@ -542,10 +547,14 @@ fun FluidArtworkBackground(
                             fade = crossfade.value,
                         )
                         val shader = runCatching { builder.makeShader(null) }.getOrNull()
-                        if (shader != null) {
-                            paint.shader = shader
-                            drawIntoCanvas { canvas ->
-                                canvas.skiaCanvas.drawRect(Rect.makeWH(size.width, size.height), paint)
+                        shader?.use {
+                            try {
+                                paint.shader = it
+                                drawIntoCanvas { canvas ->
+                                    canvas.skiaCanvas.drawRect(Rect.makeWH(size.width, size.height), paint)
+                                }
+                            } finally {
+                                paint.shader = null
                             }
                         }
                     }

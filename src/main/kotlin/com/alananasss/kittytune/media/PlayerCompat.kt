@@ -44,6 +44,9 @@ private const val STRETCH_RAMP_STEP_MS = 40L
 internal const val CROSSFADE_SPAN_START = 0.3f
 internal const val CROSSFADE_SPAN_END = 0.7f
 
+internal fun isIncomingAudioReady(state: AudioEngine.State, isSeeking: Boolean, hasBufferedAudio: Boolean): Boolean =
+    state == AudioEngine.State.READY && !isSeeking && hasBufferedAudio
+
 /**
  * The crossfade's two gain ramps, at file level so the mix glow can be lit by the same numbers the
  * ears hear.
@@ -180,7 +183,13 @@ class Player {
         val headers: Map<String, String>,
         /** Wall-clock ms when the prebuffer was stored, for TTL eviction. */
         val createdAtMs: Long = System.currentTimeMillis(),
-    )
+    ) {
+        fun matches(trackId: Long?, startPositionMs: Long, requestedPlan: AutomixPlan?): Boolean =
+            this.trackId == trackId &&
+                (plan?.incomingStartMs ?: 0L) == (requestedPlan?.incomingStartMs ?: startPositionMs) &&
+                (plan?.tempoRatio ?: 1f) == (requestedPlan?.tempoRatio ?: 1f) &&
+                (plan?.pitchRatio ?: 1f) == (requestedPlan?.pitchRatio ?: 1f)
+    }
 
     @Volatile
     private var prebufferedTransition: PrebufferedTransition? = null
@@ -235,8 +244,24 @@ class Player {
     }
 
     @Synchronized
+    internal fun takeCompatiblePrebuffer(trackId: Long?, startPositionMs: Long, plan: AutomixPlan?): PrebufferedTransition? {
+        val prepared = prebufferedTransition
+        if (!isPrebuffered(trackId ?: Long.MIN_VALUE) || prepared?.matches(trackId, startPositionMs, plan) != true) {
+            releasePrebuffered()
+            return null
+        }
+        prebufferGeneration++
+        prebufferInFlight = false
+        prebufferJob?.cancel()
+        prebufferJob = null
+        prebufferedTransition = null
+        return prepared
+    }
+
+    @Synchronized
     fun prebufferTransition(item: MediaItem, nextTrack: Track, automixPlan: AutomixPlan? = null) {
-        if (isCrossfadingOut || isPrebuffered(nextTrack.id) || prebufferInFlight) return
+        if (isCrossfadingOut || prebufferInFlight) return
+        if (isPrebuffered(nextTrack.id) && prebufferedTransition?.matches(nextTrack.id, 0L, automixPlan) == true) return
         releasePrebuffered()
         prebufferInFlight = true
         val generation = prebufferGeneration
@@ -499,19 +524,11 @@ class Player {
         unbindEngine(oldEngine)
 
         val targetTrackId = item.track?.id
-        val isAdopted = prebufferedTransition != null && prebufferedTransition?.trackId == targetTrackId
-        val pre = if (isAdopted) prebufferedTransition else null
-        if (!isAdopted) releasePrebuffered()
-        else {
-            prebufferGeneration++
-            prebufferInFlight = false
-            prebufferJob?.cancel()
-            prebufferJob = null
-        }
-        prebufferedTransition = null
+        val pre = takeCompatiblePrebuffer(targetTrackId, startPositionMs, automixPlan)
+        val isAdopted = pre != null
 
         val newEngine = pre?.engine ?: AudioEngine()
-        val effectivePlan = pre?.plan ?: automixPlan
+        val effectivePlan = automixPlan
 
         bindEngine(newEngine)
         activeEngine = newEngine
@@ -532,7 +549,7 @@ class Player {
 
         listeners.forEach { it.onMediaItemTransition(currentMediaItem, MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) }
 
-        val actualStartPos = if (isAdopted) (effectivePlan?.incomingStartMs ?: startPositionMs) else (effectivePlan?.incomingStartMs ?: startPositionMs)
+        val actualStartPos = effectivePlan?.incomingStartMs ?: startPositionMs
 
         startCrossfade(
             newEngine = newEngine,
@@ -541,9 +558,7 @@ class Player {
             startPositionMs = actualStartPos,
             crossfadeDurationMs = crossfadeDurationMs,
             effectivePlan = effectivePlan,
-            isAdopted = isAdopted,
-            preUrl = pre?.url,
-            preHeaders = pre?.headers
+            isAdopted = isAdopted
         )
     }
 
@@ -554,11 +569,10 @@ class Player {
         startPositionMs: Long,
         crossfadeDurationMs: Long,
         effectivePlan: AutomixPlan?,
-        isAdopted: Boolean,
-        preUrl: String?,
-        preHeaders: Map<String, String>?
+        isAdopted: Boolean
     ) {
         crossfadeJob = scope.launch {
+            var preserveOutgoingForRetry = true
             try {
                 if (!isAdopted) {
                     val rawUrl = item.uri?.takeIf {
@@ -569,11 +583,8 @@ class Player {
                     } ?: item.track?.let { withContext(Dispatchers.IO) { StreamResolver.resolveStream(it) } }
 
                     if (rawUrl == null) {
-                        oldEngine.stop()
-                        oldEngine.release()
-                        fadingEngine = null
-                        isCrossfadingOut = false
-                        listeners.forEach { it.onPlaybackStateChanged(STATE_ENDED) }
+                        reportCrossfadeFailure(newEngine, oldEngine,
+                            IllegalStateException("Incoming stream unavailable"))
                         return@launch
                     }
                     val url = if (rawUrl.startsWith("metrofuse-deezer://")) {
@@ -607,15 +618,24 @@ class Player {
                 setFadeGains(0f, 1f)
                 newEngine.setTrackGainDb(trackGainDb)
 
-                if (playWhenReady) newEngine.play()
-
-                if (!isAdopted) {
-                    var waitCount = 0
-                    while (newEngine.state == AudioEngine.State.BUFFERING && waitCount < 50 && isActive) {
-                        delay(100)
-                        waitCount++
+                // Prepared engines are paused and have not decoded PCM yet. Wait for resume before
+                // starting the bounded readiness window; opening a device is not audible readiness.
+                while (!playWhenReady && isActive) delay(50)
+                if (!isActive || activeEngine !== newEngine || fadingEngine !== oldEngine) return@launch
+                newEngine.play()
+                var readinessWaitMs = 0L
+                while (!isIncomingAudioReady(newEngine.state, newEngine.isSeeking, newEngine.hasBufferedAudio)) {
+                    if (!isActive || activeEngine !== newEngine || fadingEngine !== oldEngine) return@launch
+                    if (playWhenReady) readinessWaitMs += 50L
+                    if (readinessWaitMs >= 5_000L) {
+                        preserveOutgoingForRetry = true
+                        reportCrossfadeFailure(newEngine, oldEngine,
+                            java.util.concurrent.TimeoutException("Incoming audio readiness timeout"))
+                        return@launch
                     }
+                    delay(50)
                 }
+                preserveOutgoingForRetry = false
 
                 val transitionDuration = effectivePlan?.overlapMs ?: crossfadeDurationMs
                 var remainingMs = oldEngine.durationMs - oldEngine.positionMs
@@ -686,8 +706,13 @@ class Player {
                         delay(delayMs)
                     }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                preserveOutgoingForRetry = true
+                reportCrossfadeFailure(newEngine, oldEngine, error)
             } finally {
-                if (fadingEngine == oldEngine) {
+                if (!preserveOutgoingForRetry && fadingEngine === oldEngine && activeEngine === newEngine) {
                     setFadeGains(1f, 0f)
                     oldEngine.stop()
                     oldEngine.release()
@@ -704,12 +729,12 @@ class Player {
                             // Back to the track's own tempo and key, in steps too small to hear. Ten jumps of a
                             // fifth of a second each made the start of a mixed-in track warble, as if it were
                             // playing at a lower quality for its first seconds (issue #66).
-                            scope.launch {
+                            scope.launch restoreTempo@{
                                 val startTempo = effectivePlan.tempoRatio
                                 val startPitch = effectivePlan.pitchRatio
                                 for (step in 1..STRETCH_RAMP_STEPS) {
                                     delay(STRETCH_RAMP_STEP_MS)
-                                    if (!isActive) break
+                                    if (!isActive || activeEngine !== newEngine || isCrossfadingOut) return@restoreTempo
                                     val frac = FastOutSlowInEasing.transform(step.toFloat() / STRETCH_RAMP_STEPS)
                                     val curTempo = startTempo + frac * (1f - startTempo)
                                     val curPitch = startPitch + frac * (1f - startPitch)
@@ -727,6 +752,22 @@ class Player {
                 }
             }
         }
+    }
+
+    private suspend fun reportCrossfadeFailure(newEngine: AudioEngine, oldEngine: AudioEngine, error: Throwable) {
+        withContext(Dispatchers.Main) {
+            handleCrossfadeFailure(newEngine, oldEngine, error)
+        }
+    }
+
+    /** Only the transition that still owns both engines can report failure or change their gains. */
+    @Synchronized
+    internal fun handleCrossfadeFailure(newEngine: AudioEngine, oldEngine: AudioEngine, error: Throwable) {
+        if (activeEngine !== newEngine || fadingEngine !== oldEngine) return
+        setFadeGains(0f, 1f)
+        newEngine.stop()
+        onError?.invoke(error)
+        listeners.toList().forEach { it.onPlayerError(error) }
     }
 
     fun addMediaItem(item: MediaItem) { items.add(item) }

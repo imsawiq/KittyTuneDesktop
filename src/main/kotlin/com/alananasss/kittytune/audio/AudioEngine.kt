@@ -142,6 +142,11 @@ class AudioEngine {
     @Volatile private var processingSeek = false
     val isSeeking: Boolean get() = seekRequestMs >= 0L || processingSeek
 
+    /** PCM from the current seek has reached the current output device. READY alone precedes seeking. */
+    @Volatile
+    var hasBufferedAudio: Boolean = false
+        private set
+
     @Volatile
     private var paused = true
 
@@ -412,6 +417,7 @@ class AudioEngine {
         if (seekRequestMs >= 0L) return
         Logger.e("AudioEngine", "Warming up paused stream at $positionMs ms")
         warmUpRequested = true
+        hasBufferedAudio = false
         seekRequestMs = positionMs
     }
 
@@ -419,6 +425,7 @@ class AudioEngine {
         synchronized(seekLock) {
             val target = if (durationMs > 0L) ms.coerceIn(0L, durationMs) else ms.coerceAtLeast(0L)
             seekRevision++
+            hasBufferedAudio = false
             seekRequestMs = target
             positionMs = target
             aiDetection.notifySeek(target)
@@ -823,6 +830,7 @@ class AudioEngine {
             }
 
             localLine = openLine()
+            hasBufferedAudio = false
             line = localLine
 
             if (stopFlag || activeWorkerId != workerId) return
@@ -835,6 +843,7 @@ class AudioEngine {
                     pendingDeviceSwap = false
                     closeLineInstance(localLine)
                     localLine = openLine()
+                    hasBufferedAudio = false
                     line = localLine
                 }
 
@@ -1019,7 +1028,7 @@ class AudioEngine {
 
                 val samples = frame.samples ?: continue
                 pushFrame(samples, frame.audioChannels)
-                drainStretcher(outBuf, localLine)
+                drainStretcher(outBuf, localLine, readRevision)
 
                 val decodedPositionMs = (grabber?.timestamp ?: 0L) / 1000L
                 publishDecodedPosition(decodedPositionMs, readRevision)
@@ -1151,17 +1160,17 @@ class AudioEngine {
         stretcher.queue(processedBuffer, requiredShorts)
     }
 
-    private fun drainStretcher(outBuf: ShortArray, localLine: SourceDataLine?) {
+    private fun drainStretcher(outBuf: ShortArray, localLine: SourceDataLine?, revision: Long = seekRevision) {
         while (stretcher.available() >= outputChannels) {
             val n = stretcher.drain(outBuf, outBuf.size)
             if (n <= 0) break
-            writeToLine(outBuf, n, localLine)
+            writeToLine(outBuf, n, localLine, revision)
         }
     }
 
     private var lineWriteBuffer = ByteArray(0)
 
-    private fun writeToLine(samples: ShortArray, count: Int, localLine: SourceDataLine?) {
+    internal fun writeToLine(samples: ShortArray, count: Int, localLine: SourceDataLine?, revision: Long = seekRevision) {
         val l = localLine ?: line ?: return
         val requiredBytes = count * 2
         if (lineWriteBuffer.size < requiredBytes) {
@@ -1174,7 +1183,12 @@ class AudioEngine {
             lineWriteBuffer[bi++] = ((s shr 8) and 0xFF).toByte()
         }
         try {
-            l.write(lineWriteBuffer, 0, requiredBytes)
+            val written = l.write(lineWriteBuffer, 0, requiredBytes)
+            synchronized(seekLock) {
+                if (written > 0 && revision == seekRevision && seekRequestMs < 0L &&
+                    line === l && !stopFlag
+                ) hasBufferedAudio = true
+            }
         } catch (_: Exception) {
         }
     }
@@ -1236,6 +1250,7 @@ class AudioEngine {
         } catch (_: Exception) {
         }
         if (line == localLine) {
+            hasBufferedAudio = false
             line = null
         }
     }
@@ -1246,6 +1261,7 @@ class AudioEngine {
         warmUpJob = null
         warmUpRequested = false
         stopFlag = true
+        hasBufferedAudio = false
         activeWorkerId++
         paused = true
         val currentWorker = worker

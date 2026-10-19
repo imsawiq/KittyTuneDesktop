@@ -324,6 +324,7 @@ private fun VolumeTrack(
 
     val latestOnChange by rememberUpdatedState(onVolumeChange)
     val latestOnFinished by rememberUpdatedState(onVolumeChangeFinished)
+    val wavePath = remember { Path() }
 
     Canvas(
         modifier = modifier
@@ -499,7 +500,7 @@ private fun VolumeTrack(
                 val amplitude = spec.amplitude.toPx() * animatedAmplitude
                 val k = (2.0 * Math.PI / spec.wavelength.toPx()).toFloat()
                 val shift = phase.floatValue
-                val wave = Path()
+                val wave = wavePath.apply { rewind() }
                 var t = 0f
                 val start = at(0f)
                 wave.moveTo(start.x, start.y)
@@ -547,7 +548,7 @@ private fun VolumeTrack(
                 val amplitude = spec.amplitude.toPx() * animatedAmplitude
                 val k = (2.0 * Math.PI / spec.wavelength.toPx()).toFloat()
                 val shift = phase.floatValue
-                val wave = Path()
+                val wave = wavePath.apply { rewind() }
                 var t = 0f
                 val start = at(0f)
                 wave.moveTo(start.x, start.y)

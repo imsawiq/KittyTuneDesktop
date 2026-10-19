@@ -48,6 +48,7 @@ fun SquigglySlider(
 ) {
     val primaryColor = colors.activeTrackColor
     val inactiveColor = colors.inactiveTrackColor
+    val wavePath = remember { Path() }
 
     var isDragging by remember { mutableStateOf(false) }
     var dragPosition by remember { mutableFloatStateOf(value) }
@@ -182,7 +183,7 @@ fun SquigglySlider(
                 }
             }
 
-            val path = Path()
+            val path = wavePath.apply { rewind() }
             val waveStart = -phaseOffset - waveLength / 2f
             val waveEnd = if (transitionEnabled) totalWidth else waveProgressPx
 
