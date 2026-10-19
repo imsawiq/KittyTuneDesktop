@@ -2644,4 +2644,7 @@
     <string name="friends_contact">Друг %1$d</string>
     <string name="friends_remove">Удалить друга</string>
     <string name="friends_unavailable">Не удалось подготовить обмен. Попробуйте ещё раз.</string>
+    <string name="playlist_playing">Играет</string>
+    <string name="pref_depth_covers">Живая обложка</string>
+    <string name="pref_depth_covers_desc">Мягкое движение переднего и заднего планов. Обработка на устройстве; модель 64 МБ загружается один раз.</string>
 </resources>

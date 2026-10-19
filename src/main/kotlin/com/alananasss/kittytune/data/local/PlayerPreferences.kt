@@ -502,6 +502,7 @@ class PlayerPreferences {
         private const val KEY_CACHED_USERNAME = "cached_username"
         private const val KEY_TRACK_DYNAMIC_THEME = "track_dynamic_theme"
         private const val KEY_ANIMATED_COVERS = "animated_covers_enabled"
+        private const val KEY_DEPTH_COVERS = "depth_covers_enabled"
         private const val KEY_ANIMATED_COVERS_FADE_UI = "animated_covers_fade_ui_enabled"
         private const val KEY_ANIMATED_ARTIST_PROFILES = "animated_artist_profiles_enabled"
 
@@ -854,6 +855,10 @@ class PlayerPreferences {
     fun setAnimatedCoversEnabled(enabled: Boolean) = Prefs.putBoolean(KEY_ANIMATED_COVERS, enabled)
     fun animatedCoversFlow(): Flow<Boolean> = Prefs.booleanFlow(KEY_ANIMATED_COVERS, true)
     fun getAnimatedCoversFlow(): Flow<Boolean> = animatedCoversFlow()
+
+    fun getDepthCoversEnabled(): Boolean = Prefs.getBoolean(KEY_DEPTH_COVERS, false)
+    fun setDepthCoversEnabled(enabled: Boolean) = Prefs.putBoolean(KEY_DEPTH_COVERS, enabled)
+    fun depthCoversFlow(): Flow<Boolean> = Prefs.booleanFlow(KEY_DEPTH_COVERS, false)
 
     fun getAnimatedCoversFadeUiEnabled(): Boolean = Prefs.getBoolean(KEY_ANIMATED_COVERS_FADE_UI, false)
     fun setAnimatedCoversFadeUiEnabled(enabled: Boolean) = Prefs.putBoolean(KEY_ANIMATED_COVERS_FADE_UI, enabled)

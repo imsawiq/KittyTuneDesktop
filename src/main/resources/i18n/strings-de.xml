@@ -2865,4 +2865,7 @@
     <string name="friends_contact">Freund %1$d</string>
     <string name="friends_remove">Freund entfernen</string>
     <string name="friends_unavailable">Der Austausch konnte nicht vorbereitet werden. Bitte versuche es erneut.</string>
+    <string name="playlist_playing">Wiedergabe läuft</string>
+    <string name="pref_depth_covers">Lebendiges Cover</string>
+    <string name="pref_depth_covers_desc">Sanfte Bewegung zwischen Vorder- und Hintergrund. Verarbeitung auf deinem Gerät; einmaliger Download eines 64-MB-Modells.</string>
 </resources>

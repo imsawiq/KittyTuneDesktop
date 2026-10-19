@@ -324,9 +324,21 @@ internal fun CoversSettingsGroup() {
     var animatedCovers by remember { mutableStateOf(prefs.getAnimatedCoversEnabled()) }
     var animatedCoversFadeUi by remember { mutableStateOf(prefs.getAnimatedCoversFadeUiEnabled()) }
     var animatedArtistProfiles by remember { mutableStateOf(prefs.getAnimatedArtistProfilesEnabled()) }
+    var depthCovers by remember { mutableStateOf(prefs.getDepthCoversEnabled()) }
     SettingsGroup(
         title = str("settings_group_covers"),
         items = buildList {
+            add { shape ->
+                SettingsItem(
+                    shape = shape,
+                    title = str("pref_depth_covers"),
+                    subtitle = str("pref_depth_covers_desc"),
+                    hasSwitch = true,
+                    switchState = depthCovers,
+                    onSwitchChange = { depthCovers = it; prefs.setDepthCoversEnabled(it) },
+                    highlightKey = "pref_depth_covers",
+                )
+            }
             add { shape ->
                 SettingsItem(
                     shape = shape,

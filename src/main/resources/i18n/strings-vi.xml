@@ -2726,4 +2726,7 @@
     <string name="friends_contact">Bạn %1$d</string>
     <string name="friends_remove">Xóa bạn</string>
     <string name="friends_unavailable">Không thể chuẩn bị chia sẻ. Vui lòng thử lại.</string>
+    <string name="playlist_playing">Đang phát</string>
+    <string name="pref_depth_covers">Ảnh bìa sống động</string>
+    <string name="pref_depth_covers_desc">Chuyển động nhẹ giữa tiền cảnh và hậu cảnh. Xử lý trên thiết bị; mô hình 64 MB chỉ tải một lần.</string>
 </resources>

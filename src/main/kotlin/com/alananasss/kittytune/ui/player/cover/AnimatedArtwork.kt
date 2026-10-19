@@ -10,10 +10,15 @@ import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import coil3.compose.AsyncImage
+import androidx.compose.ui.unit.dp
+import com.alananasss.kittytune.data.local.PlayerPreferences
 
 @Composable
 fun AnimatedArtwork(
@@ -24,6 +29,8 @@ fun AnimatedArtwork(
     contentScale: ContentScale = ContentScale.Crop,
     contentDescription: String? = null,
 ) {
+    val prefs = remember { PlayerPreferences() }
+    val depthEnabled by prefs.depthCoversFlow().collectAsState(initial = prefs.getDepthCoversEnabled())
     Box(modifier = modifier) {
         // Underneath everything: what shows while the cover loads, and for good when there is none
         // (local files without embedded art) or it fails. It used to be an empty black square.
@@ -40,6 +47,14 @@ fun AnimatedArtwork(
         }
 
         // Animated cover video overlay
+        if (depthEnabled && !artworkUrl.isNullOrBlank() && animatedCoverUrl.isNullOrBlank()) {
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                // Tiny player thumbnails cannot show this detail; do no AI or frame work for them.
+                if (maxWidth >= 96.dp && maxHeight >= 96.dp) {
+                    DepthArtwork(artworkUrl, isPlaying, contentScale, Modifier.fillMaxSize())
+                }
+            }
+        }
         if (!animatedCoverUrl.isNullOrBlank()) {
             CanvasVideo(
                 canvasUrl = animatedCoverUrl,

@@ -24,6 +24,7 @@ import com.alananasss.kittytune.ui.player.lyrics.lyricsWheel
 import com.mocharealm.accompanist.lyrics.core.model.SyncedLyrics
 import com.mocharealm.accompanist.lyrics.core.model.synced.SyncedLine
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import kotlin.test.assertEquals
@@ -36,7 +37,9 @@ class PausedLyricsReadingUiTest {
         val lines = SyncedLyrics((0 until 100).map {
             SyncedLine(content = "Lyric line $it", translation = null, start = it * 1_000, end = (it + 1) * 1_000)
         })
-        val scene = ImageComposeScene(width = 400, height = 220, density = Density(1f)) {
+        // Keep scene effects on the thread advancing its frames; the default EDT dispatcher
+        // can otherwise remeasure a lazy list concurrently with render or close.
+        val scene = ImageComposeScene(width = 400, height = 220, density = Density(1f), coroutineContext = Dispatchers.Unconfined) {
             MaterialTheme {
                 state = rememberLazyListState()
                 if (enhanced) {

@@ -2645,4 +2645,7 @@
     <string name="friends_contact">Friend %1$d</string>
     <string name="friends_remove">Remove friend</string>
     <string name="friends_unavailable">Could not prepare sharing. Please try again.</string>
+    <string name="playlist_playing">Playing</string>
+    <string name="pref_depth_covers">Living artwork</string>
+    <string name="pref_depth_covers_desc">Gentle motion between foreground and background. Processed on your device; a 64 MB model downloads once.</string>
 </resources>

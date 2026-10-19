@@ -1516,7 +1516,7 @@ fun PlaylistDetailScreen(
                                         Icon(if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, null)
                                     }
                                     Spacer(Modifier.width(8.dp))
-                                    Text(str(if (isPlaylistPlaying) "mix_playing" else "btn_play"), fontWeight = FontWeight.Bold)
+                                    Text(str(if (isPlaylistPlaying) "playlist_playing" else "btn_play"), fontWeight = FontWeight.Bold)
                                 }
                                 Spacer(Modifier.width(8.dp))
                                 val shuffleInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }

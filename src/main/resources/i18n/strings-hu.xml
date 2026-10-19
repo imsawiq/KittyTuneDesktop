@@ -2644,4 +2644,7 @@
     <string name="friends_contact">%1$d. barát</string>
     <string name="friends_remove">Barát eltávolítása</string>
     <string name="friends_unavailable">Nem sikerült előkészíteni a megosztást. Próbáld újra.</string>
+    <string name="playlist_playing">Lejátszás</string>
+    <string name="pref_depth_covers">Élő borító</string>
+    <string name="pref_depth_covers_desc">Az előtér és a háttér finom mozgása. Feldolgozás az eszközön; a 64 MB-os modell egyszer töltődik le.</string>
 </resources>

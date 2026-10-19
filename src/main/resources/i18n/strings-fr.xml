@@ -2647,4 +2647,7 @@
     <string name="friends_contact">Ami %1$d</string>
     <string name="friends_remove">Retirer cet ami</string>
     <string name="friends_unavailable">Impossible de préparer le partage. Veuillez réessayer.</string>
+    <string name="playlist_playing">En lecture</string>
+    <string name="pref_depth_covers">Pochette vivante</string>
+    <string name="pref_depth_covers_desc">Un léger mouvement entre les plans. Traitement sur votre appareil ; modèle de 64 Mo téléchargé une seule fois.</string>
 </resources>
