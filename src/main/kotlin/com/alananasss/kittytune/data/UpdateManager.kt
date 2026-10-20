@@ -25,6 +25,17 @@ enum class UpdateStatus {
     IDLE, CHECKING, AVAILABLE, DOWNLOADING, PAUSED, WAITING_FOR_AUTH, INSTALLING, MULTIPLE_INSTANCES, READY_TO_INSTALL, ERROR, NO_UPDATE, AUTH_FAILED
 }
 
+/** Search the current download directory and the legacy cache root without traversing other caches. */
+internal fun cachedUpdateFiles(cacheDirectory: File): List<File> =
+    listOf(File(cacheDirectory, "updates"), cacheDirectory)
+        .flatMap { it.listFiles()?.toList().orEmpty() }
+        .filter { it.isFile && it.name.startsWith("update_") }
+
+internal fun findCachedUpdateInstaller(cacheDirectory: File, validExtensions: List<String>): File? =
+    cachedUpdateFiles(cacheDirectory)
+        .filter { file -> validExtensions.any { file.name.endsWith(it, ignoreCase = true) } }
+        .maxByOrNull(File::lastModified)
+
 /**
  * Desktop port of the Android UpdateManager.
  * In-app update flow:
@@ -71,9 +82,7 @@ object UpdateManager {
                 ?.filter { f -> f.name.startsWith("update_") && validExts.any { f.name.endsWith(it, ignoreCase = true) } }
                 ?.maxByOrNull { it.lastModified() }
             // Check cache dir for valid update file
-            ?: AppDirs.cacheDir.listFiles()
-                ?.filter { f -> f.name.startsWith("update_") && validExts.any { f.name.endsWith(it, ignoreCase = true) } }
-                ?.maxByOrNull { it.lastModified() }
+            ?: findCachedUpdateInstaller(AppDirs.cacheDir, validExts)
             // Check Downloads folder for valid KittyTune installer
             ?: downloadsDir.listFiles()
                 ?.filter { f -> (f.name.startsWith("KittyTune", ignoreCase = true) || f.name.startsWith("kitty-tune", ignoreCase = true)) && validExts.any { f.name.endsWith(it, ignoreCase = true) } }
@@ -634,10 +643,8 @@ object UpdateManager {
                     }
                 }
             }
-            AppDirs.cacheDir.listFiles()?.forEach { f ->
-                if (f.name.startsWith("update_") && f.isFile) {
-                    runCatching { f.delete() }
-                }
+            cachedUpdateFiles(AppDirs.cacheDir).forEach { file ->
+                runCatching { file.delete() }
             }
         } catch (_: Exception) {}
     }

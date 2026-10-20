@@ -1,5 +1,7 @@
 package com.alananasss.kittytune.audio
 
+import com.alananasss.kittytune.audio.automix.AutomixStemAudioProcessor
+import com.alananasss.kittytune.audio.ai.karaoke.CachedStemReader
 import com.alananasss.kittytune.data.local.PlayerPreferences
 import com.alananasss.kittytune.ui.player.AudioEffectsState
 import com.alananasss.kittytune.utils.Logger
@@ -61,6 +63,7 @@ class AudioEngine {
     private val outputSampleRate = 44100
     private val outputChannels = 2
 
+    private val automixStem = AutomixStemAudioProcessor()
     private val fx = FxAudioProcessor()
     private val reverb = ReverbAudioProcessor()
     private val eightD = EightDAudioProcessor()
@@ -104,6 +107,7 @@ class AudioEngine {
 
     private val chain: List<AudioProcessor> = listOf(
         aiDetection,
+        automixStem,
         automixDuck,
         fx, reverb, eightD, earrape, normalization, mono,
         vintageMp3, vocalRemover, vocalBoost, flanger, partyNextDoor,
@@ -217,6 +221,7 @@ class AudioEngine {
         trackActivationStarted = false
         announcesTrackChanges = announceTrackChange && !deferPreparation
         currentTrackId = trackId
+        automixStem.seekToPositionMs(startPositionMs)
         // New track: restart AI collection from zero and drop the previous verdict,
         // mirroring the Android MusicManager resetForNewTrack + resetResult pair.
         aiDetection.resetForNewTrack()
@@ -562,6 +567,7 @@ class AudioEngine {
     }
 
     fun applyEffects(state: AudioEffectsState) {
+        automixStem.clear()
         effects = state
         fx.setEffects(state.isMuffledEnabled, state.isBassBoostEnabled)
         fx.setBassBoostGain(state.bassBoostIntensity)
@@ -688,6 +694,35 @@ class AudioEngine {
 
         limiter.setCeiling(peakLimiterCeilingFor(state))
     }
+
+    internal val automixSourceTrackId: Long? get() = currentTrackId
+
+    internal val canUseAutomixStem: Boolean
+        get() = !effects.isVocalRemoverEnabled && !effects.isVocalBoostEnabled &&
+            !isSeeking && state == State.READY && durationMs > 0L &&
+            currentUrl?.contains(".m3u8", ignoreCase = true) == false &&
+            openedContainer != null && openedContainer?.lowercase()?.let {
+                !it.contains("hls") && !it.contains("dash")
+            } == true
+
+    @Synchronized
+    internal fun installAutomixStem(
+        reader: CachedStemReader,
+        trackId: Long,
+        generation: Long,
+    ): Boolean {
+        if (currentTrackId != trackId || !canUseAutomixStem) {
+            reader.close()
+            return false
+        }
+        automixStem.install(reader, generation)
+        return true
+    }
+
+    internal fun setAutomixStemSuppression(generation: Long, amount: Float) =
+        automixStem.setSuppression(generation, amount)
+
+    internal fun clearAutomixStem(generation: Long? = null) = automixStem.clear(generation)
 
     fun setDuckMix(fraction: Float) {
         automixDuck.setMix(fraction)
@@ -860,7 +895,7 @@ class AudioEngine {
                 if (f != null) {
                     val samples = f.samples
                     if (onRecoveredFrame != null) onRecoveredFrame(f)
-                    else if (samples != null) pushFrame(samples, f.audioChannels)
+                    else if (samples != null) pushFrame(samples, f.audioChannels, f.timestamp)
                     Logger.e("AudioEngine", "Recovery succeeded on attempt $attempt!")
                     return Pair(newG, currentUrlToTry)
                 }
@@ -1031,7 +1066,7 @@ class AudioEngine {
                             // On HLS, createGrabber(seek) already positioned at the requested segment.
                             val samples = seekFrame?.samples
                             if (samples != null) {
-                                pushFrame(samples, seekFrame!!.audioChannels)
+                                pushFrame(samples, seekFrame!!.audioChannels, seekFrame!!.timestamp)
                             }
                         } else {
                             var f = seekFrame
@@ -1041,7 +1076,7 @@ class AudioEngine {
                                 if (ts >= targetTimestamp - 50_000L) {
                                     val samples = f.samples
                                     if (samples != null) {
-                                        pushFrame(samples, f.audioChannels)
+                                        pushFrame(samples, f.audioChannels, f.timestamp)
                                     }
                                     break
                                 }
@@ -1124,7 +1159,7 @@ class AudioEngine {
                 }
 
                 val samples = frame.samples ?: continue
-                pushFrame(samples, frame.audioChannels)
+                pushFrame(samples, frame.audioChannels, frame.timestamp)
                 val decodedPositionMs = (grabber?.timestamp ?: 0L) / 1000L
                 if (paused && primeWhilePaused) {
                     primeFromStretcher(readRevision, decodedPositionMs)
@@ -1197,7 +1232,7 @@ class AudioEngine {
      * peaks, then quantises. The limiter has to run while we are still in float — once the
      * samples are Shorts the overshoot has already been flat-topped.
      */
-    private fun pushFrame(buffers: Array<java.nio.Buffer>, frameChannels: Int) {
+    private fun pushFrame(buffers: Array<java.nio.Buffer>, frameChannels: Int, sourceTimestampUs: Long) {
         val n = decodeToFloat(buffers, frameChannels)
         if (n <= 0) return
 
@@ -1207,6 +1242,8 @@ class AudioEngine {
         for (i in 0 until n) {
             interleaveBuffer[i] = (decodeBuffer[i] * 32767f).toInt().coerceIn(-32768, 32767).toShort()
         }
+        if (sourceTimestampUs >= 0L) automixStem.alignSourceTimestampUs(sourceTimestampUs)
+        else automixStem.clear()
         pushThroughDsp(interleaveBuffer, n)
     }
 
@@ -1278,6 +1315,7 @@ class AudioEngine {
         buf.limit(requiredBytes)
 
         for (p in chain) {
+            if (p === automixStem && !automixStem.isActive) continue
             if (p === aiDetection && !announcesTrackChanges) continue
             p.queueInput(buf)
             buf = p.getOutput()

@@ -1,5 +1,7 @@
 package com.alananasss.kittytune.media
 
+import com.alananasss.kittytune.audio.automix.AutomixStemAudioProcessor
+import com.alananasss.kittytune.audio.ai.karaoke.CachedStemReader
 import androidx.compose.animation.core.FastOutSlowInEasing
 import com.alananasss.kittytune.audio.AudioEngine
 import com.alananasss.kittytune.audio.TrimInteriorJump
@@ -161,6 +163,7 @@ class Player {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var resolveJob: Job? = null
     private val mediaLoadGeneration = java.util.concurrent.atomic.AtomicLong()
+    private val automixStemGeneration = java.util.concurrent.atomic.AtomicLong()
     @Volatile private var preparationDeferred = false
     @Volatile private var pendingStartPositionMs = 0L
     @Volatile private var knownMediaDurationMs = 0L
@@ -628,8 +631,12 @@ class Player {
         crossfadeDurationMs: Long,
         automixPlan: AutomixPlan? = null
     ) {
+        // MusicManager already points at incoming here; capture the actual outgoing source first.
+        val outgoingTrackId = activeEngine.automixSourceTrackId ?: currentMediaItem?.track?.id
+        val outgoingDurationMs = activeEngine.durationMs
         cancelTrimSplice()
         resetMediaPreparation(startPositionMs, item.track?.effectiveFullDurationMs ?: item.track?.durationMs ?: 0L, false)
+        val stemGeneration = automixStemGeneration.get()
         items.clear()
         items.add(item)
         currentIndex = 0
@@ -680,7 +687,10 @@ class Player {
             startPositionMs = actualStartPos,
             crossfadeDurationMs = crossfadeDurationMs,
             effectivePlan = effectivePlan,
-            isAdopted = isAdopted
+            isAdopted = isAdopted,
+            outgoingTrackId = outgoingTrackId,
+            outgoingDurationMs = outgoingDurationMs,
+            stemGeneration = stemGeneration,
         )
     }
 
@@ -691,7 +701,10 @@ class Player {
         startPositionMs: Long,
         crossfadeDurationMs: Long,
         effectivePlan: AutomixPlan?,
-        isAdopted: Boolean
+        isAdopted: Boolean,
+        outgoingTrackId: Long?,
+        outgoingDurationMs: Long,
+        stemGeneration: Long,
     ) {
         crossfadeJob = scope.launch {
             var preserveOutgoingForRetry = true
@@ -776,6 +789,31 @@ class Player {
                     transitionDuration
                 }
 
+                if (effectivePlan != null && actualCrossfadeMs > 0L && outgoingTrackId != null && oldEngine.canUseAutomixStem) {
+                    val rangeStart = oldEngine.positionMs
+                    val rangeEnd = (rangeStart + actualCrossfadeMs).coerceAtMost(outgoingDurationMs)
+                    var preparedStem: CachedStemReader? = null
+                    try {
+                        withContext(Dispatchers.IO) {
+                            preparedStem = AutomixStemAudioProcessor.openCachedStem(
+                                com.alananasss.kittytune.audio.ai.karaoke.KaraokeManager.getStemFile(outgoingTrackId),
+                                outgoingDurationMs, rangeStart, rangeEnd,
+                            )
+                        }
+                        synchronized(this@Player) {
+                            val reader = preparedStem
+                            if (reader != null && isActive && activeEngine === newEngine && fadingEngine === oldEngine &&
+                                automixStemGeneration.get() == stemGeneration) {
+                                oldEngine.installAutomixStem(reader, outgoingTrackId, stemGeneration)
+                                preparedStem = null // engine owns (or rejected and closed) it
+                            }
+                        }
+                    } finally {
+                        // withContext has prompt cancellation: even a completed IO open can be discarded.
+                        preparedStem?.close()
+                    }
+                }
+                if (!isActive || activeEngine !== newEngine || fadingEngine !== oldEngine) return@launch
                 val bassDuckingEnabled = PlayerPreferences().getAutomixBassDuckingEnabled()
 
                 if (actualCrossfadeMs <= 0L) {
@@ -819,6 +857,10 @@ class Player {
 
                         if (!isActive || fadingEngine !== oldEngine) break
                         setFadeGains(fadeIn, fadeOut)
+                        if (automixStemGeneration.get() == stemGeneration) {
+                            oldEngine.setAutomixStemSuppression(stemGeneration,
+                                FastOutSlowInEasing.transform((progress / CROSSFADE_SPAN_START).coerceIn(0f, 1f)))
+                        }
 
                         if (effectivePlan != null && bassDuckingEnabled) {
                             oldEngine.setDuckMix(equalPowerIn(0.45f, 1f, progress))
@@ -834,6 +876,7 @@ class Player {
                 preserveOutgoingForRetry = true
                 reportCrossfadeFailure(newEngine, oldEngine, error)
             } finally {
+                oldEngine.clearAutomixStem(stemGeneration)
                 if (!preserveOutgoingForRetry && fadingEngine === oldEngine && activeEngine === newEngine) {
                     setFadeGains(1f, 0f)
                     oldEngine.stop(preserveTrackState = true)
@@ -927,6 +970,7 @@ class Player {
 
     @Synchronized
     fun seekTo(positionMs: Long) {
+        cancelAutomixStem()
         cancelTrimSplice()
         pendingStartPositionMs = positionMs.coerceAtLeast(0L).let { if (duration > 0L) it.coerceAtMost(duration) else it }
         if (activeEngine.currentUrl != null || !preparationDeferred) activeEngine.seekTo(pendingStartPositionMs)
@@ -946,6 +990,7 @@ class Player {
     }
 
     private fun resetMediaPreparation(positionMs: Long, durationMs: Long, deferPreparation: Boolean) {
+        cancelAutomixStem()
         mediaLoadGeneration.incrementAndGet()
         resolveJob?.cancel()
         loudnessCacheJob?.cancel()
@@ -1062,7 +1107,14 @@ class Player {
         return headers
     }
 
+    private fun cancelAutomixStem() {
+        automixStemGeneration.incrementAndGet()
+        activeEngine.clearAutomixStem()
+        fadingEngine?.clearAutomixStem()
+    }
+
     fun applyEffects(state: AudioEffectsState) {
+        cancelAutomixStem()
         cancelTrimSplice()
         lastEffectsState = state
         activeEngine.applyEffects(state)
