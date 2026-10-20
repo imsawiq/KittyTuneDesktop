@@ -462,10 +462,19 @@ class Player {
             }
         }
 
+    /** Sleep attenuation spans track changes without replacing the user's slider position. */
+    internal var sleepTimerGain: Float = 1f
+        set(value) {
+            synchronized(volumeLock) {
+                field = if (value.isFinite()) value.coerceIn(0f, 1f) else 0f
+                updateEngineVolume()
+            }
+        }
+
     // The shared lock keeps slider changes and transition ticks from overwriting each other.
     private fun updateEngineVolume() {
         synchronized(volumeLock) {
-            val amplitude = volumeAmplitude * trimGain
+            val amplitude = volumeAmplitude * trimGain * sleepTimerGain
             activeEngine.setVolume(amplitude * incomingFadeGain)
             fadingEngine?.setVolume(amplitude * outgoingFadeGain)
             trimSpliceDeck?.engine?.setVolume(amplitude * trimSpliceGain)

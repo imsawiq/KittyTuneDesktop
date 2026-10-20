@@ -1386,7 +1386,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     private fun prepareUpcomingTrimSplice() {
-        if (preFadeVolume != null || player.isCrossfadingOut) {
+        if (timedSleepTimerArmed || player.isCrossfadingOut) {
             player.cancelTrimSplice()
             upcomingTrimJump = null
             return
@@ -1406,7 +1406,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         if (currentTrim.isEmpty || trimJumpInProgress) return
         val action = currentTrim.actionFor(player.currentPosition, player.duration)
         val jump = upcomingTrimJump
-        val earlySplice = preFadeVolume == null && jump != null &&
+        val earlySplice = !timedSleepTimerArmed && jump != null &&
             jump.boundaryMs - player.currentPosition in 0L..com.alananasss.kittytune.media.TrimSpliceController.OVERLAP_MS &&
             player.isTrimSpliceReady(jump)
         if (action is com.alananasss.kittytune.audio.TrimAction.Continue && !earlySplice) return
@@ -1414,7 +1414,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         trimJumpInProgress = true
         trimTransitionJob = viewModelScope.launch {
             try {
-                if (jump != null && preFadeVolume == null && (earlySplice ||
+                if (jump != null && !timedSleepTimerArmed && (earlySplice ||
                     action is com.alananasss.kittytune.audio.TrimAction.JumpTo && action.positionMs == jump.landingMs)) {
                     val result = player.tryTrimSplice(jump)
                     if (revision != trimTransitionRevision || !isActive) return@launch
@@ -1451,7 +1451,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     /** Seeks with temporary attenuation, without changing the user's master volume. */
     private suspend fun jumpWithFade(positionMs: Long) {
         // Preserve the sleep timer's existing behavior: skip the trim ramp while its timer is armed.
-        val canFade = preFadeVolume == null
+        val canFade = !timedSleepTimerArmed
 
         // Fading *out* of something nobody has heard yet is a stutter, not a transition. A trim that
         // moves the start of the track fires within twenty milliseconds of playback beginning, and
@@ -1498,8 +1498,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     var showSleepTimerDialog by mutableStateOf(false)
     val isSleepTimerActive: Boolean get() = sleepTimerRemainingMs > 0L || sleepTimerEndOfTrack
     private var sleepTimerJob: Job? = null
-    /** Level to put back when a sleep-timer fade ends. Null means no fade is running. */
-    private var preFadeVolume: Float? = null
+    private var timedSleepTimerArmed = false
+    private var sleepTimerRevision = 0L
 
     private var pendingSeekPosition: Long? = null
     private var seekTargetPosition: Long = -1L
@@ -2195,6 +2195,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     override fun onCleared() {
+        cancelSleepTimer()
         com.alananasss.kittytune.data.friends.FriendListeningRepository.close()
         remoteTicker?.cancel()
         remoteVolumeJob?.cancel()
@@ -6217,8 +6218,8 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         val fadeDurationSec = if (isFadeEnabled) playerPrefs.getSleepTimerFadeDuration() else 0
         val fadeDurationMs = fadeDurationSec * 1000L
 
-        // Save current volume before any fade
-        preFadeVolume = player.volume
+        timedSleepTimerArmed = true
+        val revision = sleepTimerRevision
 
         val startTime = System.currentTimeMillis()
         val endTime = startTime + durationMs
@@ -6229,32 +6230,39 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         emitUiEvent(str("sleep_timer_started"))
 
         sleepTimerJob = viewModelScope.launch(Dispatchers.Main) {
-            while (isActive) {
-                val now = System.currentTimeMillis()
-                val remaining = endTime - now
+            try {
+                while (isActive) {
+                    val now = System.currentTimeMillis()
+                    val remaining = endTime - now
 
-                if (remaining <= 0) {
-                    // Timer elapsed: smooth cut to 0 then pause
-                    player.volume = 0f
-                    player.pause()
-                    // Restore original volume (playback is paused = no sound)
-                    player.volume = preFadeVolume ?: volume
-                    preFadeVolume = null
+                    if (remaining <= 0) {
+                        // Silence before pausing; finally removes attenuation without changing master volume.
+                        player.sleepTimerGain = 0f
+                        player.pause()
+                        sleepTimerRemainingMs = 0L
+                        showSleepTimerIslandNotification(isStarted = false)
+                        break
+                    }
+
+                    // Progressive fade-out zone
+                    if (fadeDurationMs > 0L && remaining <= fadeDurationMs) {
+                        val fraction = (remaining.toFloat() / fadeDurationMs).coerceIn(0f, 1f)
+                        // Attenuate amplitude independently: slider/mute changes take effect immediately.
+                        val volumeFraction = fraction * fraction
+                        player.sleepTimerGain = volumeFraction
+                    }
+
+                    sleepTimerRemainingMs = remaining
+                    delay(PlayerPreferences.SLEEP_TIMER_FADE_UPDATE_INTERVAL_MS.milliseconds)
+                }
+            } finally {
+                // An older cancelled job must not reset a newly started timer's attenuation.
+                if (revision == sleepTimerRevision) {
+                    player.sleepTimerGain = 1f
+                    timedSleepTimerArmed = false
                     sleepTimerRemainingMs = 0L
-                    showSleepTimerIslandNotification(isStarted = false)
-                    break
+                    sleepTimerJob = null
                 }
-
-                // Progressive fade-out zone
-                if (fadeDurationMs > 0L && remaining <= fadeDurationMs) {
-                    val fraction = (remaining.toFloat() / fadeDurationMs).coerceIn(0f, 1f)
-                    // Quadratic curve: perceived volume decreases naturally
-                    val volumeFraction = fraction * fraction
-                    player.volume = ((preFadeVolume ?: volume) * volumeFraction).coerceIn(0f, 1f)
-                }
-
-                sleepTimerRemainingMs = remaining
-                delay(PlayerPreferences.SLEEP_TIMER_FADE_UPDATE_INTERVAL_MS.milliseconds)
             }
         }
     }
@@ -6282,13 +6290,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun cancelSleepTimer() {
+        sleepTimerRevision++
         sleepTimerJob?.cancel()
         sleepTimerJob = null
-        // Only if a fade actually lowered the volume. This used to compare against a field that
-        // defaulted to 1.0, so cancelling — or merely *arming* a timer, which calls this first —
-        // slammed the engine to full volume while the slider stayed where the user left it.
-        preFadeVolume?.let { player.volume = it }
-        preFadeVolume = null
+        player.sleepTimerGain = 1f
+        timedSleepTimerArmed = false
         sleepTimerRemainingMs = 0L
         sleepTimerEndOfTrack = false
     }
