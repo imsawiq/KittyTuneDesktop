@@ -13,6 +13,11 @@ import com.sun.jna.Platform
  */
 object NativeMemoryManager {
 
+    // glibc malloc.h: -2 is M_TOP_PAD, not M_TRIM_THRESHOLD.
+    private const val M_ARENA_MAX = -8
+    private const val M_MMAP_THRESHOLD = -3
+    private const val M_TRIM_THRESHOLD = -1
+
     private interface LibC : Library {
         fun malloc_trim(pad: Long): Int
         fun mallopt(param: Int, value: Int): Int
@@ -32,21 +37,21 @@ object NativeMemoryManager {
     fun init() {
         if (Platform.isLinux()) {
             runCatching {
-                // M_ARENA_MAX is -8 in glibc malloc.h: limit to 2 arenas
-                libc?.mallopt(-8, 2)
-                // M_MMAP_THRESHOLD is -1 in glibc: allocate large buffers (>64KB) via mmap so they unmap instantly on free
-                libc?.mallopt(-1, 65536)
-                // M_TRIM_THRESHOLD is -2 in glibc: release free pages back to kernel when 128KB top of heap is free
-                libc?.mallopt(-2, 131072)
+                libc?.mallopt(M_ARENA_MAX, 2)
+                // Allocate large buffers (>64KB) via mmap so they unmap instantly on free.
+                libc?.mallopt(M_MMAP_THRESHOLD, 65536)
+                // Return a free top-of-heap chunk once it reaches 128KB.
+                libc?.mallopt(M_TRIM_THRESHOLD, 131072)
             }
         }
     }
 
     /**
-     * Immediately reclaims native memory back to the operating system:
+     * Releases unused native allocations; Windows heap reclamation runs on its own worker:
      * 1. Forces JavaCPP to deallocate unreferenced native pointers (FFmpeg / LiteRT).
-     * 2. Runs JavaCPP Pointer.trimMemory() (calls malloc_trim(0) on Linux, HeapCompact on Windows).
+     * 2. Runs JavaCPP Pointer.trimMemory() (malloc_trim on Linux; a no-op on Windows in JavaCPP 1.5.14).
      * 3. On Linux: explicitly invokes glibc malloc_trim(0) to release unmapped arena pages back to the kernel.
+     * 4. On Windows: schedules HeapOptimizeResources for all process LFH heaps, away from playback/UI threads.
      */
     fun trim() {
         runCatching {
@@ -59,6 +64,9 @@ object NativeMemoryManager {
             runCatching {
                 libc?.malloc_trim(0L)
             }
+        }
+        if (Platform.isWindows()) {
+            com.alananasss.kittytune.core.windows.WindowsHeapReclaimer.request()
         }
     }
 }
