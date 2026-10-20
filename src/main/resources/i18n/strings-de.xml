@@ -2873,4 +2873,7 @@
     <string name="music_import_likes_destination_library">KittyTune-Lieblingssongs</string>
     <string name="music_import_likes_destination_playlist">Eine separate Playlist</string>
     <string name="music_import_likes_destination_playlist_desc">Eine Playlist erstellen, ohne Titel zu den KittyTune-Lieblingssongs hinzuzufügen</string>
+    <string name="search_lossless_hint">Nur geprüfte FLAC-Streams. Die Verfügbarkeit hängt vom Anbieter ab.</string>
+    <string name="lossless_stream_unavailable">FLAC ist nicht verfügbar. Es wurde keine verlustbehaftete Kopie gespeichert.</string>
+    <string name="lossless_source_unavailable">Die FLAC-Quelle ist derzeit nicht verfügbar. Versuche es später erneut oder prüfe die Qobuz-Einstellungen.</string>
 </resources>

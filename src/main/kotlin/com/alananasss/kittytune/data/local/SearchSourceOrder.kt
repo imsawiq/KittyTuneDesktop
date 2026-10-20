@@ -24,6 +24,7 @@ object SearchSourceOrder {
         SearchSource.DEEZER,
         SearchSource.TIDAL,
         SearchSource.QOBUZ,
+        SearchSource.LOSSLESS,
         SearchSource.YOUTUBE_MUSIC,
     )
 

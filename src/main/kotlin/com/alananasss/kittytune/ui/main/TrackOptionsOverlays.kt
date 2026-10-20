@@ -407,9 +407,12 @@ private fun MenuSheetContent(viewModel: PlayerViewModel) {
     var showDeleteRepostConfirm by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
 
-    val isDownloaded by produceState(initialValue = false, track.id, storageTrigger) {
-        val localTrack = DownloadManager.getLocalTrack(track.id)
-        value = localTrack?.localAudioPath?.isNotEmpty() == true
+    val isDownloaded by produceState(initialValue = false, track.id, track.requireLossless, storageTrigger) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val path = DownloadManager.getLocalTrack(track.id)?.localAudioPath
+            !path.isNullOrBlank() && (!track.requireLossless ||
+                com.alananasss.kittytune.data.download.LosslessDownloadPolicy.acceptsFile(java.io.File(path)))
+        }
     }
 
     if (showDeleteDialog) {
@@ -696,6 +699,7 @@ private fun MenuSheetContent(viewModel: PlayerViewModel) {
                         text = when {
                             isDownloaded -> str("btn_delete")
                             isDownloading -> "${downloadProgressVal ?: 0}%"
+                            track.requireLossless -> str("btn_download") + " FLAC"
                             else -> str("btn_download")
                         },
                         tint = MaterialTheme.colorScheme.error.takeIf { isDownloaded },

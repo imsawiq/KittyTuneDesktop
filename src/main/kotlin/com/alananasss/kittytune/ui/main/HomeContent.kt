@@ -657,7 +657,8 @@ private fun SearchResults(
             vm.searchResultsApple.isEmpty() &&
             vm.searchResultsDeezerTracks.isEmpty() &&
             vm.searchResultsTidalTracks.isEmpty() &&
-            vm.searchResultsQobuzTracks.isEmpty()
+            vm.searchResultsQobuzTracks.isEmpty() &&
+            vm.searchResultsLosslessTracks.isEmpty()
         ) {
             // Initial loading — centered spinner
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -703,6 +704,20 @@ private fun SearchResults(
                     listState = listState
                 )
                 SearchSource.SOUNDCLOUD -> SoundCloudResults(vm, playerViewModel, navController, listState)
+                SearchSource.LOSSLESS -> Column {
+                    Text(str("search_lossless_hint"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
+                    if (vm.losslessSearchUnavailable) {
+                        Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+                            Text(str("lossless_source_unavailable"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    } else {
+                        ProviderResults(vm.searchResultsLosslessTracks, emptyList(), emptyList(), emptyList(),
+                            vm, playerViewModel, listState)
+                    }
+                }
             }
         }
     }

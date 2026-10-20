@@ -91,6 +91,7 @@ import com.alananasss.kittytune.utils.Logger
         DEEZER,
         TIDAL,
         QOBUZ,
+        LOSSLESS,
     }
 
     /**
@@ -169,6 +170,9 @@ import com.alananasss.kittytune.utils.Logger
         val searchResultsQobuzAlbums = mutableStateListOf<Playlist>()
         val searchResultsQobuzPlaylists = mutableStateListOf<Playlist>()
         val searchResultsQobuzArtists = mutableStateListOf<User>()
+        val searchResultsLosslessTracks = mutableStateListOf<Track>()
+        var losslessSearchUnavailable by mutableStateOf(false)
+            private set
 
         /**
          * Apple Music hits, kept as catalogue entries rather than as tracks.
@@ -665,6 +669,7 @@ import com.alananasss.kittytune.utils.Logger
         fun onSearchSourceChanged(source: SearchSource) {
             if (activeSearchSource == source && !searchAllPlatforms) return
             activeSearchSource = source
+            if (source == SearchSource.LOSSLESS) activeFilter = SearchFilter.TRACKS
             searchAllPlatforms = false
             if (searchQuery.isNotBlank()) {
                 searchJob?.cancel()
@@ -680,6 +685,8 @@ import com.alananasss.kittytune.utils.Logger
             searchResultsTidalTracks.clear(); searchResultsTidalAlbums.clear(); searchResultsTidalPlaylists.clear(); searchResultsTidalArtists.clear()
             searchResultsQobuzTracks.clear(); searchResultsQobuzAlbums.clear(); searchResultsQobuzPlaylists.clear(); searchResultsQobuzArtists.clear()
             searchResultsApple.clear()
+            searchResultsLosslessTracks.clear()
+            losslessSearchUnavailable = false
             yandexNotice = null
             searchCorrectedQuery = null
             tracksNextUrl = null; artistsNextUrl = null; playlistsNextUrl = null
@@ -694,7 +701,7 @@ import com.alananasss.kittytune.utils.Logger
                 if (searchAllPlatforms) {
                     coroutineScope {
                         SearchSourceOrder.visible()
-                            .filter { it != SearchSource.APPLE_MUSIC && it != SearchSource.YANDEX_MUSIC && it != SearchSource.YOUTUBE }
+                            .filter { it !in listOf(SearchSource.APPLE_MUSIC, SearchSource.YANDEX_MUSIC, SearchSource.YOUTUBE, SearchSource.LOSSLESS) }
                             .map { source -> async { runCatching { performOneSource(source, query) } } }
                             .awaitAll()
                     }
@@ -720,6 +727,7 @@ import com.alananasss.kittytune.utils.Logger
                 SearchSource.DEEZER -> performDeezerSearch(query)
                 SearchSource.TIDAL -> performTidalSearch(query)
                 SearchSource.QOBUZ -> performQobuzSearch(query)
+                SearchSource.LOSSLESS -> performLosslessSearch(query)
             }
         }
 
@@ -741,6 +749,8 @@ import com.alananasss.kittytune.utils.Logger
                 SearchSource.YOUTUBE -> searchResultsYoutube
                 SearchSource.YOUTUBE_MUSIC -> searchResultsYoutubeMusic
                 SearchSource.APPLE_MUSIC, SearchSource.YANDEX_MUSIC -> emptyList()
+                // Results were already resolved and verified while searching.
+                SearchSource.LOSSLESS -> emptyList()
             }.take(WARMED_RESULTS).toList()
             if (top.isEmpty()) return
             warmStreamsJob = viewModelScope.launch {
@@ -808,6 +818,25 @@ import com.alananasss.kittytune.utils.Logger
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
+                }
+            }
+        }
+
+        private suspend fun performLosslessSearch(query: String) {
+            val catalog = com.alananasss.kittytune.data.qobuz.QobuzSearchRepository.search(query, limit = 18)
+            if (catalog.isUnavailable) {
+                withContext(Dispatchers.Main) {
+                    if (activeSearchSource == SearchSource.LOSSLESS && searchQuery.trim() == query.trim()) {
+                        losslessSearchUnavailable = true
+                    }
+                }
+                return
+            }
+            com.alananasss.kittytune.data.lossless.VerifiedLosslessSearch().verify(catalog.tracks) { track ->
+                withContext(Dispatchers.Main) {
+                    if (activeSearchSource == SearchSource.LOSSLESS && searchQuery.trim() == query.trim()) {
+                        searchResultsLosslessTracks.add(track)
+                    }
                 }
             }
         }

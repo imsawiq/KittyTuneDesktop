@@ -118,4 +118,5 @@ internal fun searchSourceName(source: SearchSource): String = when (source) {
     SearchSource.DEEZER -> "Deezer"
     SearchSource.TIDAL -> "TIDAL"
     SearchSource.QOBUZ -> "Qobuz"
+    SearchSource.LOSSLESS -> "Lossless · FLAC"
 }

@@ -40,6 +40,7 @@ object QobuzAudioProvider {
         val countryCode: String = "US",
         val qualityCode: Int = 27,
         val customInstances: String? = null,
+        val losslessOnly: Boolean = false,
     )
 
     data class Resolved(
@@ -134,8 +135,14 @@ object QobuzAudioProvider {
 
         var lastError: String? = null
         for (quality in buildQualityFallbackOrder(query.qualityCode)) {
+            if (Thread.currentThread().isInterrupted) throw InterruptedException()
+            if (query.losslessOnly && quality !in listOf(6, 7, 27)) continue
             val attempt = requestRacedStream(track, quality, query)
             attempt.resolved?.let { resolved ->
+                if (query.losslessOnly && !resolved.mimeType.substringBefore(';').trim().equals("audio/flac", true)) {
+                    lastError = "Lossless stream unavailable"
+                    return@let
+                }
                 streamCache[streamCacheKey] = resolved
                 return resolved
             }
@@ -225,7 +232,10 @@ object QobuzAudioProvider {
                         if (attempt.resolved == null && !attempt.error.isNullOrBlank()) {
                             errors.add(attempt.error)
                         }
-                    }.takeIf { it.resolved != null }
+                    }.takeIf { attempt ->
+                        val stream = attempt.resolved
+                        stream != null && (!query.losslessOnly || stream.mimeType.substringBefore(';').trim().equals("audio/flac", true))
+                    }
                 }
             },
         ) ?: StreamAttempt(error = errors.lastOrNull())
@@ -240,8 +250,14 @@ object QobuzAudioProvider {
 
         try {
             repeat(tasks.size) {
-                val completed = runCatching { completion.take() }.getOrNull() ?: return@repeat
-                val value = runCatching { completed.get() }.getOrNull()
+                val completed = completion.take()
+                val value = try {
+                    completed.get()
+                } catch (_: java.util.concurrent.ExecutionException) {
+                    null
+                } catch (_: java.util.concurrent.CancellationException) {
+                    null
+                }
                 if (value != null) {
                     futures.cancelExcept(completed)
                     return value
@@ -698,6 +714,7 @@ object QobuzAudioProvider {
             trackCacheKey(),
             resolverRegion,
             qualityCode.toString(),
+            losslessOnly.toString(),
         ).joinToString("::")
     }
 

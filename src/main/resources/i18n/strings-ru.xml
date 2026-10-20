@@ -2652,4 +2652,7 @@
     <string name="music_import_likes_destination_library">Любимые KittyTune</string>
     <string name="music_import_likes_destination_playlist">Отдельный плейлист</string>
     <string name="music_import_likes_destination_playlist_desc">Создать плейлист, не добавляя треки в любимые KittyTune</string>
+    <string name="search_lossless_hint">Только проверенные FLAC-потоки. Доступность зависит от источника.</string>
+    <string name="lossless_stream_unavailable">FLAC недоступен. Копия с потерями не сохранена.</string>
+    <string name="lossless_source_unavailable">Источник FLAC сейчас недоступен. Попробуйте позже или проверьте настройки Qobuz.</string>
 </resources>

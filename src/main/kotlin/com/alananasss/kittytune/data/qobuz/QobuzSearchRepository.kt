@@ -19,7 +19,8 @@ data class QobuzSearchResult(
     val tracks: List<Track> = emptyList(),
     val albums: List<Playlist> = emptyList(),
     val playlists: List<Playlist> = emptyList(),
-    val artists: List<User> = emptyList()
+    val artists: List<User> = emptyList(),
+    val isUnavailable: Boolean = false,
 )
 
 object QobuzSearchRepository {
@@ -58,14 +59,14 @@ object QobuzSearchRepository {
             val artists = data.optJSONObject("artists")?.optJSONArray("items")?.mapObjects { it.toQobuzArtist() } ?: emptyList()
 
             return@withContext QobuzSearchResult(
-                tracks = tracks,
+                tracks = tracks.take(limit.coerceIn(1, 100)),
                 albums = albums,
                 playlists = emptyList(), // Qobuz public resolver does not support fetching playlist tracks
                 artists = artists
             )
         }
 
-        QobuzSearchResult()
+        QobuzSearchResult(isUnavailable = true)
     }
 
     suspend fun getAlbum(albumId: String): Playlist? = withContext(Dispatchers.IO) {

@@ -223,6 +223,18 @@ object StreamResolver {
     }
 
     suspend fun resolveStreamWithDrm(track: Track, forDownload: Boolean = false): ResolvedStream? {
+        if (track.requireLossless) {
+            return try {
+                com.alananasss.kittytune.data.lossless.LosslessAudioRepository.resolve(track, allowLocal = !forDownload)
+                    .also { if (it != null && !forDownload) streamCache[track.id] = CachedStream(it) }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: QobuzAudioProvider.QobuzResolutionException) {
+                null
+            } catch (_: IOException) {
+                null
+            }
+        }
         if (!forDownload) {
             val cached = streamCache[track.id]
             if (cached != null) {

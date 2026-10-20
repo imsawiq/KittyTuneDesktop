@@ -439,7 +439,9 @@
         @SerializedName("reveal_comments") val revealComments: Boolean? = null,
         @SerializedName("display_stats") val displayStats: Boolean? = null,
         val playCount: Long? = null,
-        val artists: List<com.alananasss.kittytune.data.spotify.SpotifyArtistRef>? = null
+        val artists: List<com.alananasss.kittytune.data.spotify.SpotifyArtistRef>? = null,
+        /** A verified FLAC search result must not silently fall back to lossy playback/downloads. */
+        val requireLossless: Boolean = false,
     ) {
         companion object {
             fun PublisherMetadata(

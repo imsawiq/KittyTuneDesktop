@@ -2734,4 +2734,7 @@
     <string name="music_import_likes_destination_library">Bài hát yêu thích KittyTune</string>
     <string name="music_import_likes_destination_playlist">Danh sách phát riêng</string>
     <string name="music_import_likes_destination_playlist_desc">Tạo danh sách phát mà không thêm bài hát vào mục yêu thích KittyTune</string>
+    <string name="search_lossless_hint">Chỉ các luồng FLAC đã xác minh. Tính khả dụng tùy thuộc nhà cung cấp.</string>
+    <string name="lossless_stream_unavailable">FLAC không khả dụng. Không lưu bản sao mất dữ liệu.</string>
+    <string name="lossless_source_unavailable">Nguồn FLAC hiện không khả dụng. Hãy thử lại sau hoặc kiểm tra cài đặt Qobuz.</string>
 </resources>

@@ -2652,4 +2652,7 @@
     <string name="music_import_likes_destination_library">KittyTune kedvelt dalok</string>
     <string name="music_import_likes_destination_playlist">Külön lejátszási lista</string>
     <string name="music_import_likes_destination_playlist_desc">Lejátszási lista létrehozása a dalok kedvelése nélkül a KittyTune-ban</string>
+    <string name="search_lossless_hint">Csak ellenőrzött FLAC-adatfolyamok. Az elérhetőség a szolgáltatótól függ.</string>
+    <string name="lossless_stream_unavailable">A FLAC nem érhető el. Nem mentettünk veszteséges másolatot.</string>
+    <string name="lossless_source_unavailable">A FLAC-forrás jelenleg nem érhető el. Próbáld később, vagy ellenőrizd a Qobuz beállításait.</string>
 </resources>

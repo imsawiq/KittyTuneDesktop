@@ -1,5 +1,7 @@
 package com.alananasss.kittytune.data
 
+import com.alananasss.kittytune.data.download.LosslessDownloadPolicy
+import com.alananasss.kittytune.data.download.LosslessUnavailableException
 import com.alananasss.kittytune.data.download.DownloadAudioFormat
 
 import com.alananasss.kittytune.core.AppDirs
@@ -907,7 +909,8 @@ object DownloadManager {
         if (activeJobs.containsKey(track.id)) return
         scope.launch {
             val existing = dao.getTrack(track.id)
-            if (existing != null && existing.localAudioPath.isNotEmpty()) return@launch
+            if (existing != null && existing.localAudioPath.isNotEmpty() &&
+                (!track.requireLossless || LosslessDownloadPolicy.acceptsFile(File(existing.localAudioPath)))) return@launch
             startDownloadJob(track, null)
         }
     }
@@ -928,13 +931,18 @@ object DownloadManager {
 
                 try {
                     val doubleCheck = dao.getTrack(track.id)
-                    if (doubleCheck != null && doubleCheck.localAudioPath.isNotEmpty()) return@withLock
+                    if (doubleCheck != null && doubleCheck.localAudioPath.isNotEmpty() &&
+                        (!track.requireLossless || LosslessDownloadPolicy.acceptsFile(File(doubleCheck.localAudioPath)))) return@withLock
 
                     _downloadProgress.update { it + (track.id to 0) }
 
                 val resolvedStream = StreamResolver.resolveStreamWithDrm(track, forDownload = true)
-                    ?: throw Exception("Cannot resolve stream URL for download")
+                    ?: if (track.requireLossless) throw LosslessUnavailableException()
+                    else throw Exception("Cannot resolve stream URL for download")
                 val streamUrl = resolvedStream.url
+                if (track.requireLossless && !LosslessDownloadPolicy.acceptsStream(resolvedStream.mimeType, streamUrl)) {
+                    throw LosslessUnavailableException()
+                }
 
                 val isHlsStream = DownloadAudioFormat.isHls(resolvedStream.mimeType, streamUrl)
                 val streamFormat = DownloadAudioFormat.forStream(resolvedStream.mimeType, streamUrl, isHlsStream)
@@ -954,6 +962,9 @@ object DownloadManager {
                             if (isActive) _downloadProgress.update { c -> c + (track.id to p) }
                         }
                     }
+                }
+                if (track.requireLossless && !LosslessDownloadPolicy.acceptsFile(tempAudioFile)) {
+                    throw LosslessUnavailableException()
                 }
                 // The artwork is metadata, not the download: a dead artwork URL (or a placeholder the
                 // API filled in — picsum/avatars, the same heuristic the playlist cover uses) used to
@@ -1030,6 +1041,10 @@ object DownloadManager {
                 // job, and a caught-and-ignored CancellationException makes the coroutine finish
                 // "normally" instead of cancelled — structured concurrency stops seeing it.
                 throw e
+            } catch (_: LosslessUnavailableException) {
+                withContext(Dispatchers.Main) {
+                    com.alananasss.kittytune.core.Toaster.show(str("lossless_stream_unavailable"))
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
