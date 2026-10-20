@@ -6,11 +6,55 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.ImageComposeScene
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import androidx.compose.runtime.CompositionLocalProvider
+import com.alananasss.kittytune.core.LocalWindowSeen
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 class ArtistLookupStateTest {
+    @Test
+    fun `mounted profiles refresh without clearing current data and stop while hidden or disposed`() {
+        val ticks = Channel<Unit>(Channel.UNLIMITED)
+        val refreshed = CompletableDeferred<String?>()
+        var seen by mutableStateOf(true)
+        var displayed: String? = null
+        var calls = 0
+        val scene = ImageComposeScene(20, 20, coroutineContext = Dispatchers.Unconfined) {
+            CompositionLocalProvider(LocalWindowSeen provides seen) {
+                displayed = rememberArtistLookup("Artist", waitForRefresh = { ticks.receive() }) {
+                    if (++calls == 1) "Initial profile" else refreshed.await()
+                }
+            }
+        }
+        var frame = 0L
+        fun render() { repeat(3) { scene.render(++frame * 10_000_000L).close() } }
+        try {
+            render()
+            assertEquals("Initial profile", displayed)
+            ticks.trySend(Unit)
+            render()
+            assertEquals("Initial profile", displayed, "Refresh must retain data until the response arrives")
+            refreshed.complete("Updated profile")
+            render()
+            assertEquals("Updated profile", displayed)
+            seen = false
+            render()
+            ticks.trySend(Unit)
+            render()
+            assertEquals(2, calls, "A hidden window must not request artist data")
+            seen = true
+            render()
+            ticks.trySend(Unit)
+            render()
+            assertEquals(3, calls)
+        } finally { scene.close() }
+        ticks.trySend(Unit)
+        assertEquals(3, calls, "Disposal must cancel the refresh loop")
+        ticks.close()
+    }
+
     @Test
     fun `changing artist hides the previous result before the new lookup completes`() {
         var artist by mutableStateOf<String?>("First")

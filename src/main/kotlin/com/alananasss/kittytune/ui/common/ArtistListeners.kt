@@ -9,6 +9,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.key
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -17,23 +18,35 @@ import com.alananasss.kittytune.core.Strings
 import com.alananasss.kittytune.core.str
 import com.alananasss.kittytune.data.artist.ArtistReach
 import java.text.NumberFormat
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 /** The streaming profile for [artistName], once it has been looked up; null before that and when there is none. */
 @Composable
 fun rememberArtistProfile(artistName: String?): ArtistReach.Profile? =
-    rememberArtistLookup(artistName, ArtistReach::profileOf)
+    rememberArtistLookup(artistName, resolve = ArtistReach::profileOf)
 
 /** A banner for [artistName] from their streaming profile, or a member's for a duo; null before it is found and when there is none. */
 @Composable
 fun rememberArtistBanner(artistName: String?): String? =
-    rememberArtistLookup(artistName, ArtistReach::bannerOf)
+    rememberArtistLookup(artistName, resolve = ArtistReach::bannerOf)
 
 /** A new artist gets fresh state immediately, before its lookup can finish. */
 @Composable
-internal fun <T> rememberArtistLookup(artistName: String?, resolve: suspend (String?) -> T?): T? =
+internal fun <T> rememberArtistLookup(
+    artistName: String?,
+    waitForRefresh: suspend () -> Unit = { delay(60_000) },
+    resolve: suspend (String?) -> T?,
+): T? =
     key(artistName) {
+        val seen = rememberUpdatedState(com.alananasss.kittytune.core.LocalWindowSeen.current)
         produceState<T?>(initialValue = null, artistName) {
-            value = resolve(artistName)
+            if (artistName.isNullOrBlank()) return@produceState
+            while (currentCoroutineContext().isActive) {
+                if (seen.value) value = resolve(artistName)
+                waitForRefresh()
+            }
         }.value
     }
 
