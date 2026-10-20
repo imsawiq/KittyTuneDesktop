@@ -1393,7 +1393,10 @@ class AudioEngine {
 
         val l =
             if (mixer != null) mixer.getLine(info) as SourceDataLine else AudioSystem.getLine(info) as SourceDataLine
-        l.open(fmt, outputSampleRate * outputChannels * 2 * 200 / 1000)
+        // DirectSound applies gain while writing: a larger native queue delays the user's volume changes.
+        // Keep decode/effect buffers intact; only shorten Windows' already processed output queue.
+        val outputBufferMs = if (com.sun.jna.Platform.isWindows()) 80 else 200
+        l.open(fmt, outputSampleRate * outputChannels * 2 * outputBufferMs / 1000)
         l.start()
         applyLineVolume(l)
         return l
