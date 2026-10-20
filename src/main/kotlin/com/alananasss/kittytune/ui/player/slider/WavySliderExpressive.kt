@@ -37,6 +37,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
@@ -96,6 +97,8 @@ fun WavySliderExpressive(
     val stroke = remember(strokeWidthPx) {
         Stroke(width = strokeWidthPx, cap = StrokeCap.Round)
     }
+    // Keep the native path's storage across frames, as the other animated sliders do.
+    val wave = remember { Path() }
 
     val latestValue by rememberUpdatedState(value)
     val latestValueRange by rememberUpdatedState(valueRange)
@@ -235,7 +238,7 @@ fun WavySliderExpressive(
             val activeEnd = (thumbX - halfGap).coerceAtLeast(trackStart)
             val inactiveStart = (thumbX + halfGap).coerceAtMost(trackEnd)
             if (activeEnd > trackStart) {
-                val wave = androidx.compose.ui.graphics.Path()
+                wave.rewind()
                 var x = trackStart
                 val phase = wavePhasePx.floatValue
                 val k = (2.0 * Math.PI / wavelengthPx).toFloat()
