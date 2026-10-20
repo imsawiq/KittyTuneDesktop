@@ -35,6 +35,9 @@ data class TrimSegment(val startMs: Long, val endMs: Long) {
     val durationMs: Long get() = (endMs - startMs).coerceAtLeast(0L)
 }
 
+/** A forward jump between two audible parts of the same track. */
+data class TrimInteriorJump(val boundaryMs: Long, val landingMs: Long)
+
 /** What playback should do at a given moment. */
 sealed interface TrimAction {
 
@@ -66,6 +69,19 @@ class TrackTrim private constructor(
 ) {
 
     val isEmpty: Boolean get() = segments.isEmpty()
+
+    /** Upcoming interior edits only; intros and track completion retain the ordinary seek path. */
+    fun nextInteriorJump(positionMs: Long, durationMs: Long): TrimInteriorJump? {
+        if (durationMs <= 0L) return null
+        return when (mode) {
+            TrimMode.CUT -> segments.firstOrNull {
+                it.startMs > 0L && it.startMs >= positionMs && it.endMs < durationMs
+            }?.let { TrimInteriorJump(it.startMs, it.endMs) }
+            TrimMode.KEEP -> segments.zipWithNext().firstOrNull { (current, next) ->
+                current.endMs >= positionMs && next.startMs < durationMs
+            }?.let { (current, next) -> TrimInteriorJump(current.endMs, next.startMs) }
+        }
+    }
 
     /**
      * Where playback should start.

@@ -2,11 +2,7 @@ package com.alananasss.kittytune.data.network
 
 import com.alananasss.kittytune.core.Prefs
 import com.alananasss.kittytune.ui.player.lyrics.LyricLine
-import com.alananasss.kittytune.ui.player.lyrics.LyricSinger
-import com.alananasss.kittytune.ui.player.lyrics.LyricWord
-import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
-import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -163,7 +159,6 @@ object MusixmatchClient {
     private const val MXM_APP_ID = "android-player-v1.0"
     
     private val MXM_SECRET = "mNdca@6W7TeEcFn6*3.s97sJ*yPMd".toByteArray(Charsets.UTF_8)
-    private val gson = Gson()
 
     private val authInterceptor = Interceptor { chain ->
         val originalRequest = chain.request()
@@ -264,47 +259,31 @@ object MusixmatchClient {
         return token ?: "invalid_token"
     }
 
-    suspend fun getLyricsData(trackId: Long, durationMs: Long, targetLang: String? = null, wantsRomanization: Boolean = false): Pair<List<LyricLine>, String?> = withContext(Dispatchers.IO) {
+    suspend fun getLyricsData(
+        trackId: Long,
+        durationMs: Long,
+        targetLang: String? = null,
+        wantsRomanization: Boolean = false,
+        onPartial: suspend (Pair<List<LyricLine>, String?>) -> Unit = {},
+    ): Pair<List<LyricLine>, String?> = withContext(Dispatchers.IO) {
         var token = getValidToken()
-
-        var responses = com.alananasss.kittytune.data.lyrics.MusixmatchLyricsRequests.fetch(api, trackId, token)
+        suspend fun publish(snapshot: com.alananasss.kittytune.data.lyrics.MusixmatchLyricsRequests.Responses) {
+            if (snapshot.needsTokenRenewal) return
+            val payload = com.alananasss.kittytune.data.lyrics.MusixmatchLyricsPayload.decode(snapshot, durationMs)
+            if (payload.first.isNotEmpty() || !payload.second.isNullOrBlank()) onPartial(payload)
+        }
+        var responses = com.alananasss.kittytune.data.lyrics.MusixmatchLyricsRequests.fetch(api, trackId, token, ::publish)
         if (responses.needsTokenRenewal) {
             Prefs.remove("mxm_user_token")
             token = getValidToken()
-            responses = com.alananasss.kittytune.data.lyrics.MusixmatchLyricsRequests.fetch(api, trackId, token)
+            responses = com.alananasss.kittytune.data.lyrics.MusixmatchLyricsRequests.fetch(api, trackId, token, ::publish)
         }
-        val subtitleRes = responses.subtitle
-        val richSyncRes = responses.richSync
-        val plainRes = responses.plain
-
-        val plainText = plainRes?.message?.body?.lyrics?.lyricsBody?.replace("******* This Lyrics is NOT for Commercial use *******", "")?.trim()
-        val subtitleJson = subtitleRes?.message?.body?.subtitle?.subtitleBody
-        val richSyncJson = richSyncRes?.message?.body?.richsync?.richsyncBody
-
-        val lines = mutableListOf<LyricLine>()
-
-        val mxmLines: List<MxmSubtitleLine> = try {
-            if (!subtitleJson.isNullOrBlank() && subtitleJson.trim().startsWith("[")) {
-                gson.fromJson(subtitleJson, object : TypeToken<List<MxmSubtitleLine>>() {}.type) ?: emptyList()
-            } else emptyList()
-        } catch (e: Exception) { emptyList() }
-
-        val mxmRichLines: List<MxmRichSyncLine> = try {
-            if (!richSyncJson.isNullOrBlank() && richSyncJson.trim().startsWith("[")) {
-                gson.fromJson(richSyncJson, object : TypeToken<List<MxmRichSyncLine>>() {}.type) ?: emptyList()
-            } else emptyList()
-        } catch (e: Exception) { emptyList() }
-
         val translationMap = mutableMapOf<String, String>()
         val romanizationMap = mutableMapOf<String, String>()
 
-        val originalLines = mutableListOf<String>()
-        if (mxmRichLines.isNotEmpty()) {
-            originalLines.addAll(mxmRichLines.mapNotNull { it.x }.filter { it.isNotBlank() })
-        } else if (mxmLines.isNotEmpty()) {
-            originalLines.addAll(mxmLines.mapNotNull { it.text }.filter { it.isNotBlank() })
-        }
-        val uniqueOriginalLines = originalLines.distinct()
+        val uniqueOriginalLines =
+            com.alananasss.kittytune.data.lyrics.MusixmatchLyricsPayload.decode(responses, durationMs)
+                .first.map { it.text }.filter { it.isNotBlank() }.distinct()
 
         if (targetLang != null) {
             try {
@@ -338,91 +317,8 @@ object MusixmatchClient {
             romanizationMap.putAll(rom)
         }
 
-        val trackRes = responses.track
-        val trackDetail = trackRes?.message?.body?.track
-        val performerTagging = trackDetail?.performerTagging
-        val parts = performerTagging?.content.orEmpty()
-        val leadArtistId = trackDetail?.artistId
-        val leadArtistName = trackDetail?.artistName
-
-        val partSingers = if (parts.isNotEmpty()) {
-            val allArtists = parts.flatMap { it.performers.orEmpty() }
-                .filter { it.type != "fan_chant" }
-                .mapNotNull { it.fqid }
-                .distinct()
-
-            val leadFqid = performerTagging?.resources?.artists?.firstOrNull {
-                (leadArtistId != null && it.artistId == leadArtistId) ||
-                (leadArtistName != null && it.artistName.equals(leadArtistName, ignoreCase = true))
-            }?.let { "mxm:artist:${it.artistId}" } ?: allArtists.firstOrNull()
-
-            val secondFqid = allArtists.firstOrNull { it != leadFqid }
-
-            parts.map { part ->
-                val performers = part.performers.orEmpty()
-                when {
-                    performers.isEmpty() -> LyricSinger.DEFAULT
-                    performers.any { it.type == "fan_chant" } || performers.size > 1 -> LyricSinger.BOTH
-                    performers[0].fqid == leadFqid -> LyricSinger.SINGER_1
-                    performers[0].fqid == secondFqid -> LyricSinger.SINGER_2
-                    else -> if (allArtists.size > 1) LyricSinger.SINGER_2 else LyricSinger.SINGER_1
-                }
-            }
-        } else emptyList()
-
-        var currentPartIdx = 0
-        fun findSingerForLine(lineText: String): LyricSinger {
-            if (parts.isEmpty()) return LyricSinger.DEFAULT
-            val cleaned = lineText.trim().lowercase().replace(Regex("[^\\p{L}\\p{Nd}]+"), "")
-            if (cleaned.isBlank()) return LyricSinger.DEFAULT
-
-            for (offset in parts.indices) {
-                val idx = (currentPartIdx + offset) % parts.size
-                val snippetClean = parts[idx].snippet.orEmpty().lowercase().replace(Regex("[^\\p{L}\\p{Nd}]+"), "")
-                if (snippetClean.isNotBlank() && (snippetClean.contains(cleaned) || cleaned.contains(snippetClean) || (cleaned.length >= 6 && snippetClean.length >= 6 && (snippetClean.startsWith(cleaned.take(6)) || cleaned.startsWith(snippetClean.take(6)))))) {
-                    currentPartIdx = idx
-                    return partSingers.getOrElse(idx) { LyricSinger.DEFAULT }
-                }
-            }
-            return LyricSinger.DEFAULT
-        }
-
-        if (mxmRichLines.isNotEmpty()) {
-            for (rLine in mxmRichLines) {
-                val lineText = rLine.x ?: ""
-                if (lineText.isBlank()) continue
-
-                val startMs = (rLine.ts * 1000).toLong()
-                val endMs = (rLine.te * 1000).toLong()
-
-                val words = rLine.l?.mapIndexed { index, w ->
-                    val wordStartMs = startMs + (w.o * 1000).toLong()
-                    val wordEndMs = if (index < rLine.l.size - 1) startMs + (rLine.l[index + 1].o * 1000).toLong() else endMs
-                    LyricWord(w.c ?: "", wordStartMs, wordEndMs)
-                } ?: emptyList()
-
-                val translationText = translationMap[lineText.trim()]
-                val romanizationText = romanizationMap[lineText.trim()]
-                val singer = findSingerForLine(lineText)
-                lines.add(LyricLine(lineText, startMs, endMs, words, translationText, romanizationText, singer))
-            }
-        } else if (mxmLines.isNotEmpty()) {
-            for (i in mxmLines.indices) {
-                val sub = mxmLines[i]
-                val lineText = sub.text ?: ""
-                if (lineText.isBlank()) continue
-
-                val startMs = ((sub.time?.total ?: 0f) * 1000).toLong()
-                val endMs = if (i < mxmLines.size - 1) ((mxmLines[i + 1].time?.total ?: 0f) * 1000).toLong() else durationMs
-
-                val translationText = translationMap[lineText.trim()]
-                val romanizationText = romanizationMap[lineText.trim()]
-                val singer = findSingerForLine(lineText)
-                lines.add(LyricLine(lineText, startMs, endMs, emptyList(), translationText, romanizationText, singer))
-            }
-        }
-
-        return@withContext Pair(lines, plainText)
+        com.alananasss.kittytune.data.lyrics.MusixmatchLyricsPayload.decode(
+            responses, durationMs, translationMap, romanizationMap)
     }
 
     suspend fun search(query: String): List<MxmTrack> {

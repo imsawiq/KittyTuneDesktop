@@ -1317,9 +1317,12 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
     private var trimWatchJob: Job? = null
     private var trimTransitionJob: Job? = null
     private var trimTransitionRevision = 0L
+    private var upcomingTrimJump: com.alananasss.kittytune.audio.TrimInteriorJump? = null
 
     private fun cancelTrimTransition() {
         trimTransitionRevision++
+        player.cancelTrimSplice()
+        upcomingTrimJump = null
         trimTransitionJob?.cancel()
         trimTransitionJob = null
         trimJumpInProgress = false
@@ -1376,19 +1379,56 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
             while (isActive) {
                 delay(TRIM_TICK_MS)
                 if (!isPlaying || trimJumpInProgress || currentTrim.isEmpty) continue
+                prepareUpcomingTrimSplice()
                 applyTrimNow()
             }
         }
     }
 
+    private fun prepareUpcomingTrimSplice() {
+        if (preFadeVolume != null || player.isCrossfadingOut) {
+            player.cancelTrimSplice()
+            upcomingTrimJump = null
+            return
+        }
+        val position = player.currentPosition
+        val pending = upcomingTrimJump
+        val next = if (pending != null && position in pending.boundaryMs until pending.landingMs) pending
+            else currentTrim.nextInteriorJump(position, player.duration)
+        if (next != upcomingTrimJump) player.cancelTrimSplice()
+        upcomingTrimJump = next
+        if (next != null && next.boundaryMs - position in 1L..com.alananasss.kittytune.media.TrimSpliceController.LOOKAHEAD_MS &&
+            player.duration - next.landingMs > 1_000L
+        ) player.prepareTrimSplice(next)
+    }
+
     private fun applyTrimNow() {
         if (currentTrim.isEmpty || trimJumpInProgress) return
         val action = currentTrim.actionFor(player.currentPosition, player.duration)
-        if (action is com.alananasss.kittytune.audio.TrimAction.Continue) return
+        val jump = upcomingTrimJump
+        val earlySplice = preFadeVolume == null && jump != null &&
+            jump.boundaryMs - player.currentPosition in 0L..com.alananasss.kittytune.media.TrimSpliceController.OVERLAP_MS &&
+            player.isTrimSpliceReady(jump)
+        if (action is com.alananasss.kittytune.audio.TrimAction.Continue && !earlySplice) return
         val revision = ++trimTransitionRevision
         trimJumpInProgress = true
         trimTransitionJob = viewModelScope.launch {
             try {
+                if (jump != null && preFadeVolume == null && (earlySplice ||
+                    action is com.alananasss.kittytune.audio.TrimAction.JumpTo && action.positionMs == jump.landingMs)) {
+                    val result = player.tryTrimSplice(jump)
+                    if (revision != trimTransitionRevision || !isActive) return@launch
+                    when (result) {
+                        com.alananasss.kittytune.media.TrimSpliceResult.COMPLETED -> {
+                            upcomingTrimJump = null
+                            currentPosition = player.currentPosition
+                            listenSession?.onSeek(currentPosition)
+                            return@launch
+                        }
+                        com.alananasss.kittytune.media.TrimSpliceResult.CANCELLED -> return@launch
+                        com.alananasss.kittytune.media.TrimSpliceResult.UNAVAILABLE -> if (earlySplice) return@launch
+                    }
+                }
                 when (action) {
                     is com.alananasss.kittytune.audio.TrimAction.Continue -> Unit
                     is com.alananasss.kittytune.audio.TrimAction.JumpTo -> jumpWithFade(action.positionMs)
@@ -2722,27 +2762,34 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         // Every source is asked at once, and the best answer wins: word timings, then line timings, then plain
         // text, among results that are about this song. Asked one after another and stopped at the first usable
         // answer, a plain text from the first source beat line-timed lyrics from the fifth (issue #66).
-        suspend fun candidateFrom(providerId: PreferredLyricsProvider): LyricsCandidate? {
+        suspend fun candidateFrom(
+            providerId: PreferredLyricsProvider,
+            publish: suspend (LyricsCandidate) -> Unit,
+        ): LyricsCandidate? {
         return when (providerId) {
             PreferredLyricsProvider.MUSIXMATCH -> {
                 val query = queries.firstOrNull() ?: "${target.title} ${target.artist}".trim()
                 var found: LyricsCandidate? = null
                 for (spelling in LyricsMatcher.queryVariants(query, track.title.orEmpty())) {
-                    found = searchMusixmatchCandidates(spelling, target, trackDurationMs).firstOrNull()
+                    found = searchMusixmatchCandidates(spelling, target, trackDurationMs, publish).firstOrNull()
                     if (found != null) break
                 }
                 found ?: com.alananasss.kittytune.data.lyrics.TitleSpellings.respelled(query)?.let { respelled ->
-                    searchMusixmatchCandidates(respelled, target, trackDurationMs).firstOrNull()
+                    searchMusixmatchCandidates(respelled, target, trackDurationMs, publish).firstOrNull()
                 }
             }
             PreferredLyricsProvider.LRCLIB -> {
+                suspend fun search(query: String): List<LyricsCandidate> =
+                    searchLrcLibCandidates(query, target, trackDurationMs) { partial ->
+                        partial.filter { it.isUsable }.maxByOrNull { it.rank }?.let { publish(it) }
+                    }
                 // The whole title first, then each song of a two-song title on its own.
                 val lrcLibQueries = (queries.firstOrNull()?.let { LyricsMatcher.queryVariants(it, track.title.orEmpty()) }.orEmpty() +
                     LyricsMatcher.titleParts(target.title).map { "$it ${target.artist}".trim() })
                     .ifEmpty { listOf("${target.title} ${target.artist}".trim()) }
                 var found: LyricsCandidate? = null
                 for (query in lrcLibQueries) {
-                    found = searchLrcLibCandidates(query, target, trackDurationMs)
+                    found = search(query)
                         .filter { it.isUsable }
                         .maxByOrNull { it.rank }
                     if (found != null) break
@@ -2751,7 +2798,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 found ?: queries.firstOrNull()
                     ?.let { com.alananasss.kittytune.data.lyrics.TitleSpellings.respelled(it) }
                     ?.let { respelled ->
-                        searchLrcLibCandidates(respelled, target, trackDurationMs).filter { it.isUsable }.maxByOrNull { it.rank }
+                        search(respelled).filter { it.isUsable }.maxByOrNull { it.rank }
                     }
             }
             PreferredLyricsProvider.GENIUS -> {
@@ -2769,50 +2816,25 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         }
         }
 
-        val answers = kotlinx.coroutines.channels.Channel<Pair<Int, LyricsCandidate?>>(orderedProviders.size)
-        val jobs = orderedProviders.mapIndexed { index, providerId ->
-            launch(Dispatchers.IO) {
-                val result = withTimeoutOrNull(LYRICS_SOURCE_TIMEOUT_MS) {
-                    try {
-                        candidateFrom(providerId)
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (failure: Exception) {
-                        null
-                    }
-                }
-                answers.send(index to result)
-            }
-        }
-        val ranking = compareBy<Pair<Int, LyricsCandidate>> { (_, c) -> if (c.matchScore >= LyricsMatcher.CONFIDENT_MATCH) 1 else 0 }
+        val ranking = compareBy<IndexedValue<LyricsCandidate>> { (_, c) -> if (c.matchScore >= LyricsMatcher.CONFIDENT_MATCH) 1 else 0 }
             .thenBy { (_, c) -> c.syncTier }
             .thenBy { (_, c) -> c.rank }
             .thenByDescending { (i, _) -> i }
-        var bestAnswer: Pair<Int, LyricsCandidate>? = null
-        try {
-            repeat(jobs.size) {
-                val (index, candidate) = answers.receive()
-                if (candidate != null && candidate.isUsable) {
-                    val answer = index to candidate
-                    val previous = bestAnswer
-                    if (previous == null || ranking.compare(answer, previous) > 0) {
-                        bestAnswer = answer
-                        // Publish immediately; optional translations must not hold back the first lyric.
-                        onImproved(LyricsPayload(
-                            lines = candidate.lines.takeIf { candidate.syncTier >= LyricsMatcher.SYNC_TIER_LINE }.orEmpty(),
-                            plain = candidate.plain ?: candidate.lines.takeIf { it.isNotEmpty() }?.joinToString("\n") { it.text },
-                            provider = candidate.provider,
-                        ))
-                    }
-                }
+        val sources: List<suspend (suspend (LyricsCandidate) -> Unit) -> LyricsCandidate?> =
+            orderedProviders.map { providerId ->
+                { publish -> candidateFrom(providerId, publish)?.takeIf { it.isUsable } }
             }
-        } finally {
-            answers.cancel()
-            jobs.forEach { it.cancel() }
-        }
-        val best = bestAnswer?.second
-
-        val candidate = best ?: return@coroutineScope null
+        val candidate = com.alananasss.kittytune.data.lyrics.ParallelLyricsLookup.resolve(
+            sources = sources,
+            timeoutMs = LYRICS_SOURCE_TIMEOUT_MS,
+            ranking = ranking,
+        ) { improved ->
+            onImproved(LyricsPayload(
+                lines = improved.lines.takeIf { improved.syncTier >= LyricsMatcher.SYNC_TIER_LINE }.orEmpty(),
+                plain = improved.plain ?: improved.lines.takeIf { it.isNotEmpty() }?.joinToString("\n") { it.text },
+                provider = improved.provider,
+            ))
+        } ?: return@coroutineScope null
         val syncedLines =
             if (candidate.syncTier >= LyricsMatcher.SYNC_TIER_LINE) candidate.lines else emptyList()
         LyricsPayload(
@@ -2831,24 +2853,20 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         query: String,
         target: LyricsMatcher.Target,
         trackDurationMs: Long,
+        onPartial: suspend (List<LyricsCandidate>) -> Unit = {},
     ): List<LyricsCandidate> {
-        val (directResults, queryResults) = supervisorScope {
-            val direct = async {
-                if (target.title.isBlank() || target.artist.isBlank()) emptyList()
-                else try { LrcLibClient.api.searchLyricsStructured(target.title, target.artist) }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { emptyList() }
-            }
-            val freeText = async {
-                try { LrcLibClient.api.searchLyrics(query) }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { emptyList() }
-            }
-            direct.await() to freeText.await()
-        }
+        val results = com.alananasss.kittytune.data.lyrics.LrcLibLyricsRequests.fetch(
+            LrcLibClient.api, target.title, target.artist, query,
+        ) { partial -> onPartial(lrcLibCandidates(partial, target, trackDurationMs)) }
+        return lrcLibCandidates(results, target, trackDurationMs)
+    }
 
-        val allResults = (directResults + queryResults).distinctBy { it.id }
-        return allResults
+    private fun lrcLibCandidates(
+        results: List<com.alananasss.kittytune.data.network.LrcLibResponse>,
+        target: LyricsMatcher.Target,
+        trackDurationMs: Long,
+    ): List<LyricsCandidate> {
+        return results
             .mapNotNull { result ->
                 val candTitle = result.trackName?.takeIf { it.isNotBlank() } ?: result.name
                 val altTitle = if (candTitle != result.name) result.name else null
@@ -2894,6 +2912,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
         query: String,
         target: LyricsMatcher.Target,
         trackDurationMs: Long,
+        onPartial: suspend (LyricsCandidate) -> Unit = {},
     ): List<LyricsCandidate> {
         val results = try {
             MusixmatchClient.search(query)
@@ -2926,21 +2945,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 )
             } ?: return emptyList()
 
-        val data = try {
-            MusixmatchClient.getLyricsData(
-                pick.trackId,
-                trackDurationMs,
-                // Decorations happen after provisional lyrics reach the screen.
-                targetLang = null,
-                wantsRomanization = false,
-            )
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (e: Exception) {
-            return emptyList()
-        }
-        return listOf(
-            LyricsCandidate(
+        fun candidate(data: Pair<List<LyricLine>, String?>) = LyricsCandidate(
                 lines = data.first,
                 plain = data.second,
                 provider = "MUSIXMATCH",
@@ -2952,7 +2957,22 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                 ),
                 titleSimilarity = LyricsMatcher.titleSimilarity(pick.trackName, target),
             )
-        )
+
+        val data = try {
+            MusixmatchClient.getLyricsData(
+                pick.trackId,
+                trackDurationMs,
+                // Decorations happen after provisional lyrics reach the screen.
+                targetLang = null,
+                wantsRomanization = false,
+                onPartial = { partial -> onPartial(candidate(partial)) },
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
+            return emptyList()
+        }
+        return listOf(candidate(data))
     }
 
     /** The best Genius page for any of the generated queries, as plain text. */
@@ -3154,7 +3174,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
      * source was done. Results belong to the track they were searched for and are dropped with it.
      */
     fun searchLyricsManual(query: String, provider: String = manualSearchProvider) =
-        startManualLyricsSearch(query, provider, onSettled = null)
+        startManualLyricsSearch(query, provider, onResultsUpdated = null)
 
     /**
      * Which search the list belongs to. A search cancelled by the next one (a chip clicked while the first was
@@ -3163,7 +3183,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
      */
     private var manualSearchGeneration = 0
 
-    private fun startManualLyricsSearch(query: String, provider: String, onSettled: ((LyricsMatcher.Target) -> Unit)?) {
+    private fun startManualLyricsSearch(query: String, provider: String, onResultsUpdated: ((LyricsMatcher.Target) -> Unit)?) {
         manualSearchProvider = provider
         if (query.isBlank()) return
         val track = uiCurrentTrack ?: return
@@ -3210,6 +3230,7 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                             val merged = ManualLyricsSearch.merge(unifiedLyricSearchResults.toList(), listOf(localResult), target)
                             unifiedLyricSearchResults.clear()
                             unifiedLyricSearchResults.addAll(merged)
+                            onResultsUpdated?.invoke(target)
                         }
                     }
                     sources.forEach { source ->
@@ -3222,12 +3243,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                                 val merged = ManualLyricsSearch.merge(unifiedLyricSearchResults.toList(), found, target)
                                 unifiedLyricSearchResults.clear()
                                 unifiedLyricSearchResults.addAll(merged)
+                                onResultsUpdated?.invoke(target)
                                 pendingLyricSources.remove(source)
                             }
                         }
                     }
                 }
-                if (generation == manualSearchGeneration && uiCurrentTrack?.id == track.id) onSettled?.invoke(target)
+                if (generation == manualSearchGeneration && uiCurrentTrack?.id == track.id) onResultsUpdated?.invoke(target)
             } finally {
                 withContext(NonCancellable + Dispatchers.Main) {
                     if (generation == manualSearchGeneration) {
@@ -6768,10 +6790,13 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application),
                     if (isCrossfade && (automixPlan != null || crossfadeDurationMs > 0) && MusicManager.player.isPlaying && startPosition == 0L) {
                         MusicManager.crossfadeToMediaItem(newMediaItem, startPosition, crossfadeDurationMs, automixPlan)
                     } else {
-                        MusicManager.player.setMediaItem(newMediaItem, startPosition)
-                        MusicManager.player.prepare()
+                        if (!autoPlay) MusicManager.player.pause()
+                        MusicManager.player.setMediaItem(newMediaItem, startPosition, deferPreparation = !autoPlay)
                         if (autoPlay) {
+                            MusicManager.player.prepare()
                             MusicManager.player.playWhenReady = true
+                        } else {
+                            isLoading = false
                         }
                     }
 

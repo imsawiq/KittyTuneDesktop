@@ -2,6 +2,7 @@ package com.alananasss.kittytune.media
 
 import androidx.compose.animation.core.FastOutSlowInEasing
 import com.alananasss.kittytune.audio.AudioEngine
+import com.alananasss.kittytune.audio.TrimInteriorJump
 import com.alananasss.kittytune.data.MusicManager
 import com.alananasss.kittytune.data.StreamResolver
 import com.alananasss.kittytune.data.SessionManager
@@ -159,6 +160,20 @@ class Player {
     private var currentIndex = 0
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var resolveJob: Job? = null
+    private val mediaLoadGeneration = java.util.concurrent.atomic.AtomicLong()
+    @Volatile private var preparationDeferred = false
+    @Volatile private var pendingStartPositionMs = 0L
+    @Volatile private var knownMediaDurationMs = 0L
+    private var loudnessCacheJob: Job? = null
+    private data class PendingLoudnessScan(
+        val track: Track,
+        val url: String,
+        val headers: Map<String, String>,
+        val engine: AudioEngine,
+        val generation: Long,
+        val requiresPlayback: Boolean,
+    )
+    @Volatile private var pendingLoudnessScan: PendingLoudnessScan? = null
 
     var onCompletion: (() -> Unit)? = null
     var onError: ((Throwable) -> Unit)? = null
@@ -200,6 +215,89 @@ class Player {
     private val volumeLock = Any()
     private var incomingFadeGain = 1f
     private var outgoingFadeGain = 0f
+    private var trimSpliceDeck: EngineTrimDeck? = null
+    private var trimSpliceGain = 0f
+    private val trimSpliceController = TrimSpliceController(scope, object : TrimSpliceHost {
+        override val currentIdentity: Any get() = activeEngine
+        override val canPrepare: Boolean get() = playWhenReady && !isCrossfadingOut && fadingEngine == null &&
+            prebufferedTransition == null && !prebufferInFlight && trimSpliceDeck == null && trimGain == 1f &&
+            !AutomixManager.isAutomixing.value && activeEngine.canPrepareTrimSplice
+
+        override fun createIncoming(jump: TrimInteriorJump): TrimSpliceDeck? = synchronized(this@Player) {
+            if (!canPrepare) return@synchronized null
+            val engine = activeEngine.prepareTrimSpliceHead(jump.landingMs) ?: return@synchronized null
+            EngineTrimDeck(engine).also { trimSpliceDeck = it }
+        }
+
+        override fun canContinue(outgoing: Any, incoming: TrimSpliceDeck): Boolean = synchronized(this@Player) {
+            activeEngine === outgoing && trimSpliceDeck === incoming && playWhenReady &&
+                !isCrossfadingOut && !activeEngine.isSeeking && !activeEngine.pendingDeviceSwap && trimGain == 1f &&
+                (incoming as? EngineTrimDeck)?.matchesAudioDevice() == true
+        }
+
+        override fun setGains(outgoing: Any, incoming: TrimSpliceDeck, outgoingGain: Float, incomingGain: Float): Boolean =
+            synchronized(this@Player) {
+                if (!canContinue(outgoing, incoming)) return@synchronized false
+                synchronized(volumeLock) {
+                    incomingFadeGain = outgoingGain
+                    trimSpliceGain = incomingGain
+                    updateEngineVolume()
+                }
+                true
+            }
+
+        override fun commit(outgoing: Any, incoming: TrimSpliceDeck): Boolean = synchronized(this@Player) {
+            if (!canContinue(outgoing, incoming)) return@synchronized false
+            val old = activeEngine
+            val oldPosition = old.positionMs
+            val deck = incoming as EngineTrimDeck
+            unbindEngine(old)
+            trimSpliceDeck = null
+            trimSpliceGain = 0f
+            activeEngine = deck.engine
+            activeEngine.takeOverSameTrackPlayback()
+            bindEngine(activeEngine)
+            setFadeGains(1f, 0f)
+            old.release(preserveTrackState = true)
+            listeners.toList().forEach {
+                it.onPositionDiscontinuity(PositionInfo(oldPosition), PositionInfo(activeEngine.positionMs), DISCONTINUITY_REASON_SEEK)
+            }
+            true
+        }
+
+        override fun restore(outgoing: Any, incoming: TrimSpliceDeck) = synchronized(this@Player) {
+            if (trimSpliceDeck !== incoming) return@synchronized
+            trimSpliceDeck = null
+            trimSpliceGain = 0f
+            if (activeEngine === outgoing) setFadeGains(1f, 0f)
+            // Dispose before releasing the player's secondary slot to a concurrent preparation.
+            incoming.release()
+        }
+    })
+
+    private class EngineTrimDeck(val engine: AudioEngine) : TrimSpliceDeck {
+        private val deviceName = PlayerPreferences().getAudioDevice()
+        private var released = false
+        fun matchesAudioDevice(): Boolean = deviceName == PlayerPreferences().getAudioDevice()
+        override val identity: Any get() = engine
+        override val isPrimed: Boolean get() = engine.hasPrimedAudio
+        override val isBuffered: Boolean get() = engine.hasBufferedAudio && !engine.isSeeking
+        override val hasFailed: Boolean get() = engine.state == AudioEngine.State.IDLE || engine.state == AudioEngine.State.ENDED
+        override val positionMs: Long get() = engine.positionMs
+        override fun play() = engine.play()
+        @Synchronized
+        override fun release() {
+            if (released) return
+            released = true
+            engine.release(preserveTrackState = true)
+        }
+    }
+
+    @Synchronized
+    fun prepareTrimSplice(jump: TrimInteriorJump): Boolean = trimSpliceController.prepare(jump)
+    fun isTrimSpliceReady(jump: TrimInteriorJump): Boolean = trimSpliceController.isReady(jump)
+    internal suspend fun tryTrimSplice(jump: TrimInteriorJump): TrimSpliceResult = trimSpliceController.splice(jump)
+    fun cancelTrimSplice() = trimSpliceController.cancel()
 
     /**
      * Prebuffered engines that aren't consumed by a crossfade within this TTL are released to avoid
@@ -238,8 +336,8 @@ class Player {
         val pb = prebufferedTransition ?: return
         prebufferedTransition = null
         try {
-            pb.engine.stop()
-            pb.engine.release()
+            pb.engine.stop(preserveTrackState = true)
+            pb.engine.release(preserveTrackState = true)
         } catch (_: Exception) {}
     }
 
@@ -260,7 +358,7 @@ class Player {
 
     @Synchronized
     fun prebufferTransition(item: MediaItem, nextTrack: Track, automixPlan: AutomixPlan? = null) {
-        if (isCrossfadingOut || prebufferInFlight) return
+        if (isCrossfadingOut || prebufferInFlight || trimSpliceController.isReserved || trimSpliceDeck != null) return
         if (isPrebuffered(nextTrack.id) && prebufferedTransition?.matches(nextTrack.id, 0L, automixPlan) == true) return
         releasePrebuffered()
         prebufferInFlight = true
@@ -295,7 +393,7 @@ class Player {
 
                 val startPos = automixPlan?.incomingStartMs ?: 0L
                 preparedEngine.setVolume(0f)
-                preparedEngine.setMediaItem(url, headers, startPos, nextTrack.id)
+                preparedEngine.setMediaItem(url, headers, startPos, nextTrack.id, announceTrackChange = false)
                 preparedEngine.prepare()
 
                 synchronized(this@Player) {
@@ -311,22 +409,27 @@ class Player {
                 synchronized(this@Player) {
                     if (generation == prebufferGeneration) prebufferInFlight = false
                 }
-                if (!retained) engine?.release()
+                if (!retained) engine?.release(preserveTrackState = true)
             }
         }
     }
 
-    var playWhenReady: Boolean = false
+    @Volatile var playWhenReady: Boolean = false
         set(value) {
-            field = value
-            // The outgoing track of a crossfade too: left alone it went on fading out after a pause, which
-            // sounded like the pause had not worked, and the next press — meant as a second pause — resumed.
-            if (value) {
-                activeEngine.play()
-                fadingEngine?.play()
-            } else {
-                activeEngine.pause()
-                fadingEngine?.pause()
+            synchronized(this) {
+                if (!value) cancelTrimSplice()
+                field = value
+                // Both sides pause together; a paused transition retains its current gains.
+                if (value) {
+                    preparationDeferred = false
+                    if (activeEngine.currentUrl != null) activeEngine.play()
+                    else if (resolveJob?.isActive != true) loadCurrent()
+                    fadingEngine?.play()
+                    startPendingLoudnessScan()
+                } else {
+                    activeEngine.pause()
+                    fadingEngine?.pause()
+                }
             }
         }
 
@@ -334,8 +437,8 @@ class Player {
 
     val isSeeking: Boolean get() = activeEngine.isSeeking
     val isPlaying: Boolean get() = activeEngine.isPlaying
-    val currentPosition: Long get() = activeEngine.positionMs
-    val duration: Long get() = activeEngine.durationMs
+    val currentPosition: Long get() = if (activeEngine.currentUrl == null) pendingStartPositionMs else activeEngine.positionMs
+    val duration: Long get() = activeEngine.durationMs.takeIf { it > 0L } ?: knownMediaDurationMs
     val isLoading: Boolean get() = activeEngine.state == AudioEngine.State.BUFFERING
 
     /** The slider's position, 0..1. Engines are given [volumeAmplitude], never this directly. */
@@ -362,6 +465,7 @@ class Player {
             val amplitude = volumeAmplitude * trimGain
             activeEngine.setVolume(amplitude * incomingFadeGain)
             fadingEngine?.setVolume(amplitude * outgoingFadeGain)
+            trimSpliceDeck?.engine?.setVolume(amplitude * trimSpliceGain)
         }
     }
 
@@ -384,6 +488,7 @@ class Player {
         set(value) {
             field = value
             activeEngine.setTrackGainDb(value)
+            trimSpliceDeck?.engine?.setTrackGainDb(value)
         }
 
     val mediaItemCount: Int get() = items.size
@@ -448,16 +553,29 @@ class Player {
     fun addListener(l: Listener) { if (!listeners.contains(l)) listeners.add(l) }
     fun removeListener(l: Listener) { listeners.remove(l) }
 
-    fun setMediaItemUrl(url: String, headers: Map<String, String>, startPositionMs: Long = 0L) {
-        activeEngine.setMediaItem(url, headers, startPositionMs, currentMediaItem?.track?.id)
+    @Synchronized
+    fun setMediaItemUrl(
+        url: String,
+        headers: Map<String, String>,
+        startPositionMs: Long = 0L,
+        deferPreparation: Boolean = false,
+        knownDurationMs: Long = 0L,
+    ) {
+        cancelTrimSplice()
+        resetMediaPreparation(startPositionMs, knownDurationMs, deferPreparation)
+        activeEngine.setMediaItem(url, headers, startPositionMs, currentMediaItem?.track?.id,
+            deferPreparation = deferPreparation, knownDurationMs = knownDurationMs)
     }
 
-    fun setMediaItem(item: MediaItem, startPositionMs: Long = 0L) {
+    @Synchronized
+    fun setMediaItem(item: MediaItem, startPositionMs: Long = 0L, deferPreparation: Boolean = false) {
+        cancelTrimSplice()
+        resetMediaPreparation(startPositionMs, item.track?.effectiveFullDurationMs ?: item.track?.durationMs ?: 0L, deferPreparation)
         releasePrebuffered()
         crossfadeJob?.cancel()
         isCrossfadingOut = false
-        fadingEngine?.stop()
-        fadingEngine?.release()
+        fadingEngine?.stop(preserveTrackState = true)
+        fadingEngine?.release(preserveTrackState = true)
         fadingEngine = null
         setFadeGains(1f, 0f)
         items.clear()
@@ -493,12 +611,13 @@ class Player {
             }
             updateEngineVolume()
             activeEngine.setTrackGainDb(trackGainDb)
-            activeEngine.setMediaItem(url, headers, startPositionMs, track?.id)
+            activeEngine.setMediaItem(url, headers, startPositionMs, track?.id,
+                deferPreparation = deferPreparation, knownDurationMs = knownMediaDurationMs)
         } else {
             activeEngine.stop()
         }
 
-        loadCurrent(startPositionMs, false, 0L)
+        loadCurrent()
         listeners.forEach { it.onMediaItemTransition(currentMediaItem, MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) }
     }
 
@@ -509,6 +628,8 @@ class Player {
         crossfadeDurationMs: Long,
         automixPlan: AutomixPlan? = null
     ) {
+        cancelTrimSplice()
+        resetMediaPreparation(startPositionMs, item.track?.effectiveFullDurationMs ?: item.track?.durationMs ?: 0L, false)
         items.clear()
         items.add(item)
         currentIndex = 0
@@ -516,8 +637,8 @@ class Player {
         crossfadeJob?.cancel()
         resolveJob?.cancel()
 
-        fadingEngine?.stop()
-        fadingEngine?.release()
+        fadingEngine?.stop(preserveTrackState = true)
+        fadingEngine?.release(preserveTrackState = true)
         fadingEngine = null
 
         val oldEngine = activeEngine
@@ -528,6 +649,7 @@ class Player {
         val isAdopted = pre != null
 
         val newEngine = pre?.engine ?: AudioEngine()
+        if (isAdopted) newEngine.activateTrackPlayback()
         val effectivePlan = automixPlan
 
         bindEngine(newEngine)
@@ -658,8 +780,8 @@ class Player {
 
                 if (actualCrossfadeMs <= 0L) {
                     setFadeGains(1f, 0f)
-                    oldEngine.stop()
-                    oldEngine.release()
+                    oldEngine.stop(preserveTrackState = true)
+                    oldEngine.release(preserveTrackState = true)
                     AutomixManager.setMixProgress(0f)
                 } else {
                     val steps = (actualCrossfadeMs / 15L).toInt().coerceIn(50, 800)
@@ -714,8 +836,8 @@ class Player {
             } finally {
                 if (!preserveOutgoingForRetry && fadingEngine === oldEngine && activeEngine === newEngine) {
                     setFadeGains(1f, 0f)
-                    oldEngine.stop()
-                    oldEngine.release()
+                    oldEngine.stop(preserveTrackState = true)
+                    oldEngine.release(preserveTrackState = true)
                     fadingEngine = null
 
                     oldEngine.resetDuckMix()
@@ -774,47 +896,107 @@ class Player {
     fun addMediaItems(newItems: List<MediaItem>) { items.addAll(newItems) }
     fun removeMediaItem(index: Int) { if (index in items.indices) items.removeAt(index) }
 
-    fun prepare() { activeEngine.prepare() }
+    fun prepare() { if (!preparationDeferred) activeEngine.prepare() }
 
     fun play() { playWhenReady = true }
     fun pause() { playWhenReady = false }
     fun stop() {
+        cancelTrimSplice()
+        resetMediaPreparation(0L, 0L, false)
         crossfadeJob?.cancel()
         resolveJob?.cancel()
         releasePrebuffered()
         isCrossfadingOut = false
-        fadingEngine?.stop()
-        fadingEngine?.release()
+        fadingEngine?.stop(preserveTrackState = true)
+        fadingEngine?.release(preserveTrackState = true)
         fadingEngine = null
         activeEngine.stop()
     }
     fun release() {
+        cancelTrimSplice()
+        resetMediaPreparation(0L, 0L, false)
         crossfadeJob?.cancel()
         resolveJob?.cancel()
         releasePrebuffered()
         isCrossfadingOut = false
-        fadingEngine?.release()
+        fadingEngine?.release(preserveTrackState = true)
         fadingEngine = null
         activeEngine.release()
         scope.coroutineContext[Job]?.cancel()
     }
 
+    @Synchronized
     fun seekTo(positionMs: Long) {
-        activeEngine.seekTo(positionMs)
+        cancelTrimSplice()
+        pendingStartPositionMs = positionMs.coerceAtLeast(0L).let { if (duration > 0L) it.coerceAtMost(duration) else it }
+        if (activeEngine.currentUrl != null || !preparationDeferred) activeEngine.seekTo(pendingStartPositionMs)
         val pi = PositionInfo(positionMs)
         listeners.forEach { it.onPositionDiscontinuity(pi, pi, DISCONTINUITY_REASON_SEEK) }
     }
 
+    @Synchronized
     fun seekTo(mediaItemIndex: Int, positionMs: Long) {
+        cancelTrimSplice()
         if (mediaItemIndex in items.indices) {
             currentIndex = mediaItemIndex
-            loadCurrent(positionMs, false, 0L)
+            resetMediaPreparation(positionMs, currentMediaItem?.track?.effectiveFullDurationMs ?: currentMediaItem?.track?.durationMs ?: 0L, preparationDeferred)
+            loadCurrent()
             listeners.forEach { it.onMediaItemTransition(currentMediaItem, MEDIA_ITEM_TRANSITION_REASON_AUTO) }
         }
     }
 
-    private fun loadCurrent(startPositionMs: Long, isCrossfade: Boolean, crossfadeDurationMs: Long) {
+    private fun resetMediaPreparation(positionMs: Long, durationMs: Long, deferPreparation: Boolean) {
+        mediaLoadGeneration.incrementAndGet()
+        resolveJob?.cancel()
+        loudnessCacheJob?.cancel()
+        loudnessCacheJob = null
+        pendingLoudnessScan = null
+        pendingStartPositionMs = positionMs.coerceAtLeast(0L)
+        knownMediaDurationMs = durationMs.coerceAtLeast(0L)
+        preparationDeferred = deferPreparation
+        if (deferPreparation) playWhenReady = false
+    }
+
+    /** Cached gain is cheap; a restored paused track must not launch a full stream loudness scan. */
+    fun scheduleTrackLoudness(track: Track, url: String, headers: Map<String, String>) {
+        val request = PendingLoudnessScan(track, url, headers, activeEngine, mediaLoadGeneration.get(),
+            preparationDeferred || activeEngine.isPreparationDeferred)
+        loudnessCacheJob?.cancel()
+        loudnessCacheJob = scope.launch {
+            val cached = com.alananasss.kittytune.data.TrackLoudnessRepository.getLoudness(track.id)
+            if (!isActive) return@launch
+            synchronized(this@Player) {
+                if (!ownsLoudnessRequest(request)) return@synchronized
+                if (cached != null) request.engine.setTrackLoudness(cached.integratedLufs, cached.truePeakDb)
+                else {
+                    request.engine.clearTrackLoudness()
+                    pendingLoudnessScan = request
+                    startPendingLoudnessScan()
+                }
+            }
+        }
+    }
+
+    private fun ownsLoudnessRequest(request: PendingLoudnessScan): Boolean =
+        request.generation == mediaLoadGeneration.get() && request.engine === activeEngine && request.engine.currentUrl == request.url
+
+    @Synchronized
+    private fun startPendingLoudnessScan() {
+        val request = pendingLoudnessScan ?: return
+        if (!ownsLoudnessRequest(request)) { pendingLoudnessScan = null; return }
+        if (preparationDeferred || request.engine.isPreparationDeferred || request.requiresPlayback && !playWhenReady) return
+        pendingLoudnessScan = null
+        com.alananasss.kittytune.data.TrackLoudnessRepository.scanTrackAsync(request.track, request.url, request.headers) { scanned ->
+            synchronized(this@Player) {
+                if (ownsLoudnessRequest(request)) request.engine.setTrackLoudness(scanned.integratedLufs, scanned.truePeakDb)
+            }
+        }
+    }
+
+    private fun loadCurrent() {
         val item = currentMediaItem ?: return
+        val engine = activeEngine
+        val generation = mediaLoadGeneration.get()
         resolveJob?.cancel()
         resolveJob = scope.launch {
             val rawUrl = item.uri?.takeIf {
@@ -824,12 +1006,16 @@ class Player {
                 else java.io.File(it).exists()
             }
                 ?: item.track?.let { withContext(Dispatchers.IO) { StreamResolver.resolveStream(it) } }
+            if (!isActive || generation != mediaLoadGeneration.get() || activeEngine !== engine || currentMediaItem !== item) return@launch
             if (rawUrl == null) {
-                activeEngine.stop()
-                fadingEngine?.stop()
-                fadingEngine?.release()
-                fadingEngine = null
-                listeners.forEach { it.onPlaybackStateChanged(STATE_ENDED) }
+                synchronized(this@Player) {
+                    if (generation != mediaLoadGeneration.get() || activeEngine !== engine || currentMediaItem !== item || preparationDeferred) return@synchronized
+                    engine.stop()
+                    fadingEngine?.stop(preserveTrackState = true)
+                    fadingEngine?.release(preserveTrackState = true)
+                    fadingEngine = null
+                    listeners.forEach { it.onPlaybackStateChanged(STATE_ENDED) }
+                }
                 return@launch
             }
             val url = if (rawUrl.startsWith("metrofuse-deezer://")) {
@@ -840,37 +1026,28 @@ class Player {
             val headers = buildHeaders(item.track)
 
             val track = item.track
-            if (track != null) {
-                val cached = com.alananasss.kittytune.data.TrackLoudnessRepository.getLoudness(track.id)
-                if (cached != null) {
-                    activeEngine.setTrackLoudness(cached.integratedLufs, cached.truePeakDb)
-                } else {
-                    activeEngine.clearTrackLoudness()
-                    com.alananasss.kittytune.data.TrackLoudnessRepository.scanTrackAsync(track, url, headers) { scanned ->
-                        if (currentMediaItem?.track?.id == track.id) {
-                            activeEngine.setTrackLoudness(scanned.integratedLufs, scanned.truePeakDb)
-                        }
-                    }
+            val cached = track?.let { com.alananasss.kittytune.data.TrackLoudnessRepository.getLoudness(it.id) }
+            if (!isActive) return@launch
+            synchronized(this@Player) {
+                if (generation != mediaLoadGeneration.get() || activeEngine !== engine || currentMediaItem !== item) return@synchronized
+                val defer = preparationDeferred && !playWhenReady
+                fadingEngine?.stop(preserveTrackState = true)
+                fadingEngine?.release(preserveTrackState = true)
+                fadingEngine = null
+                updateEngineVolume()
+                engine.setTrackGainDb(trackGainDb)
+                if (engine.currentUrl != url) {
+                    engine.setMediaItem(url, headers, pendingStartPositionMs, track?.id,
+                        deferPreparation = defer, knownDurationMs = knownMediaDurationMs)
                 }
-            } else {
-                activeEngine.clearTrackLoudness()
-            }
-
-            fadingEngine?.stop()
-            fadingEngine?.release()
-            fadingEngine = null
-
-            updateEngineVolume()
-            activeEngine.setTrackGainDb(trackGainDb)
-            if (activeEngine.currentUrl != url) {
-                activeEngine.setMediaItem(url, headers, startPositionMs, currentMediaItem?.track?.id)
-                activeEngine.prepare()
-                if (playWhenReady) activeEngine.play()
-            } else {
-                if (activeEngine.state == AudioEngine.State.IDLE) {
-                    activeEngine.prepare()
-                    if (playWhenReady) activeEngine.play()
+                if (cached != null) engine.setTrackLoudness(cached.integratedLufs, cached.truePeakDb)
+                else {
+                    engine.clearTrackLoudness()
+                    if (track != null) pendingLoudnessScan = PendingLoudnessScan(track, url, headers, engine, generation, defer)
                 }
+                if (!defer && engine.state != AudioEngine.State.READY) engine.prepare()
+                if (playWhenReady) engine.play()
+                startPendingLoudnessScan()
             }
         }
     }
@@ -886,6 +1063,7 @@ class Player {
     }
 
     fun applyEffects(state: AudioEffectsState) {
+        cancelTrimSplice()
         lastEffectsState = state
         activeEngine.applyEffects(state)
         fadingEngine?.applyEffects(state)

@@ -102,12 +102,10 @@ object MusicManager {
 
         com.alananasss.kittytune.audio.automix.AutomixManager.init()
 
-        // Content filtering (issue #41): warm the block cache and load the
-        // ArtifactNet model if already downloaded (mirrors PlaybackService.onCreate).
-        // Model load is off the main thread: mmap + XNNPACK delegate init is seconds.
+        // Warm the block cache and read model availability without opening an inference runtime.
         BlockManager.init()
         scope.launch(Dispatchers.IO) {
-            com.alananasss.kittytune.audio.ai.AiDetectionManager.init()
+            com.alananasss.kittytune.audio.ai.AiDetectionManager.refreshModelAvailability()
         }
 
         // The saved level has to be applied here rather than from the ViewModel: AppBootstrap
@@ -123,7 +121,7 @@ object MusicManager {
 
     /**
      * Resolve [track] to a playable URL and start it in the engine.
-     * @param autoPlay start immediately (false = prepared but paused, used for session restore)
+     * @param autoPlay start immediately (false restores metadata and position until the first play)
      * @param startPositionMs resume position
      */
     fun playTrack(track: Track, autoPlay: Boolean = true, startPositionMs: Long = 0L) {
@@ -144,21 +142,17 @@ object MusicManager {
 
             // Note: playTrack is used for direct URI launches, normal playback uses PlayerViewModel.playRobustly
             val headers = buildStreamHeaders(track)
-            val cached = TrackLoudnessRepository.getLoudness(track.id)
-            if (cached != null) {
-                player.activeEngine.setTrackLoudness(cached.integratedLufs, cached.truePeakDb)
-            } else {
-                player.activeEngine.clearTrackLoudness()
-                TrackLoudnessRepository.scanTrackAsync(track, url, headers) { scanned ->
-                    if (currentTrack?.id == track.id) {
-                        player.activeEngine.setTrackLoudness(scanned.integratedLufs, scanned.truePeakDb)
-                    }
-                }
+            if (!autoPlay) player.pause()
+            player.setMediaItemUrl(
+                url, headers, startPositionMs,
+                deferPreparation = !autoPlay,
+                knownDurationMs = track.effectiveFullDurationMs ?: track.durationMs ?: 0L,
+            )
+            player.scheduleTrackLoudness(track, url, headers)
+            if (autoPlay) {
+                player.prepare()
+                player.play()
             }
-
-            player.setMediaItemUrl(url, headers, startPositionMs)
-            player.prepare()
-            if (autoPlay) player.play()
 
             currentTrack?.let { t -> onTrackChange?.invoke(t) }
         }

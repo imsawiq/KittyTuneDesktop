@@ -147,6 +147,27 @@ class AudioEngine {
     var hasBufferedAudio: Boolean = false
         private set
 
+    @Volatile private var primeWhilePaused = false
+    @Volatile private var primedAudio: ShortArray? = null
+    private var primedRevision = -1L
+    private var primedPositionMs = 0L
+    val hasPrimedAudio: Boolean get() = primedAudio != null && !isSeeking
+    @Volatile private var announcesTrackChanges = true
+    @Volatile var isPreparationDeferred = false
+        private set
+    private var pendingTrackActivation = false
+    private var trackActivationStarted = false
+    private var currentTrackId: Long? = null
+    @Volatile private var openedContainer: String? = null
+    @Volatile private var hasAutomixStretch = false
+    internal val primedHeadSamples: Int get() = outputSampleRate * outputChannels * 150 / 1000
+
+    /** Prepare a bounded PCM head without writing to a stopped device or advancing the public clock. */
+    fun preparePrimedHead() {
+        primeWhilePaused = true
+        prepare()
+    }
+
     @Volatile
     private var paused = true
 
@@ -174,11 +195,6 @@ class AudioEngine {
         val fmt = AudioFormat(outputSampleRate, outputChannels)
         chain.forEach { it.configure(fmt) }
         aiDetection.setPreferences(PlayerPreferences())
-        if (!com.alananasss.kittytune.audio.ai.AiDetectionManager.isModelLoaded() &&
-            com.alananasss.kittytune.audio.ai.AiDetectionManager.isModelReady()
-        ) {
-            com.alananasss.kittytune.audio.ai.AiDetectionManager.initAsync()
-        }
     }
 
 
@@ -188,24 +204,31 @@ class AudioEngine {
         headers: Map<String, String> = emptyMap(),
         startPositionMs: Long = 0L,
         trackId: Long? = null,
+        announceTrackChange: Boolean = true,
+        deferPreparation: Boolean = false,
+        knownDurationMs: Long = 0L,
     ) {
+        if (announcesTrackChanges && trackActivationStarted) {
+            com.alananasss.kittytune.audio.ai.AiDetectionManager.resetResult()
+        }
         stopInternal()
+        isPreparationDeferred = deferPreparation
+        pendingTrackActivation = announceTrackChange && deferPreparation
+        trackActivationStarted = false
+        announcesTrackChanges = announceTrackChange && !deferPreparation
+        currentTrackId = trackId
         // New track: restart AI collection from zero and drop the previous verdict,
         // mirroring the Android MusicManager resetForNewTrack + resetResult pair.
         aiDetection.resetForNewTrack()
-        com.alananasss.kittytune.audio.ai.AiDetectionManager.resetResult()
         vocalRemover.setTrack(trackId)
         vocalBoost.setTrack(trackId)
-        if (trackId != null) {
-            com.alananasss.kittytune.audio.ai.karaoke.KaraokeManager.notifyTrackChanged(trackId)
-        }
         currentUrl = url
+        openedContainer = null
         currentHeaders = headers
         positionMs = startPositionMs
-        durationMs = 0L
+        durationMs = knownDurationMs.coerceAtLeast(0L)
         seekRequestMs = if (startPositionMs > 0) startPositionMs else -1L
         if (startPositionMs > 0) {
-            aiDetection.notifySeek(startPositionMs)
             vocalRemover.seekToPositionMs(startPositionMs)
             vocalBoost.seekToPositionMs(startPositionMs)
         }
@@ -221,16 +244,8 @@ class AudioEngine {
             hlsAdapter = null
         }
 
-        val prefs = com.alananasss.kittytune.data.local.PlayerPreferences()
-        if (prefs.aiShowBadge || prefs.aiAutoSkip) {
-            com.alananasss.kittytune.audio.ai.AiDetectionManager.analyzeTrackUpfront(
-                urlOrPath = url,
-                headers = headers,
-                hlsAdapter = hlsAdapter,
-            )
-        }
-        
-        setState(State.BUFFERING)
+        if (announcesTrackChanges) activateTrackPlayback()
+        setState(if (deferPreparation) State.IDLE else State.BUFFERING)
     }
 
     /**
@@ -278,6 +293,7 @@ class AudioEngine {
 
     @Synchronized
     fun prepare() {
+        if (isPreparationDeferred || worker?.isAlive == true && state != State.ENDED) return
         val url = currentUrl ?: return
         stopFlag = false
         val newWorkerId = ++activeWorkerId
@@ -341,11 +357,14 @@ class AudioEngine {
         const val INITIAL_OPEN_ATTEMPTS = 3
     }
 
+    @Synchronized
     fun play() {
+        activateDeferredPreparation()
         warmUpJob?.cancel()
         warmUpJob = null
         val pausedFor = if (paused && pausedTimestamp > 0L) System.currentTimeMillis() - pausedTimestamp else 0L
         paused = false
+        primeWhilePaused = false
         pausedTimestamp = 0L
 
         // The decode loop can exit on its own — a recovery that ran out of attempts, an
@@ -426,9 +445,10 @@ class AudioEngine {
             val target = if (durationMs > 0L) ms.coerceIn(0L, durationMs) else ms.coerceAtLeast(0L)
             seekRevision++
             hasBufferedAudio = false
+            discardPrimedAudio()
             seekRequestMs = target
             positionMs = target
-            aiDetection.notifySeek(target)
+            if (announcesTrackChanges) aiDetection.notifySeek(target)
             vocalRemover.seekToPositionMs(target)
             vocalBoost.seekToPositionMs(target)
         }
@@ -463,10 +483,14 @@ class AudioEngine {
     fun getMaxTruePeakDb(): Float = normalization.getMaxTruePeakDb()
 
     @Synchronized
-    fun stop() {
+    fun stop(preserveTrackState: Boolean = false) {
+        if (preserveTrackState) announcesTrackChanges = false
         stopInternal()
+        isPreparationDeferred = false
+        pendingTrackActivation = false
+        trackActivationStarted = false
         aiDetection.resetForNewTrack()
-        com.alananasss.kittytune.audio.ai.AiDetectionManager.resetResult()
+        if (announcesTrackChanges) com.alananasss.kittytune.audio.ai.AiDetectionManager.resetResult()
         currentUrl = null
         currentHeaders = emptyMap()
         positionMs = 0L
@@ -477,10 +501,11 @@ class AudioEngine {
         setState(State.IDLE)
     }
 
-    fun release() {
+    fun release(preserveTrackState: Boolean = false) {
+        if (preserveTrackState) announcesTrackChanges = false
         stop()
         aiDetection.resetForNewTrack()
-        com.alananasss.kittytune.audio.ai.AiDetectionManager.resetResult()
+        if (announcesTrackChanges) com.alananasss.kittytune.audio.ai.AiDetectionManager.resetResult()
         // Terminal: this engine is being discarded. stopInternal() only flush()es the
         // chain, which keeps native DSP state (normalisation handle, ebur128 histograms)
         // allocated. Every crossfade releases an engine, so without this reset each
@@ -488,6 +513,37 @@ class AudioEngine {
         chain.forEach { runCatching { it.reset() } }
         scope.coroutineContext[Job]?.cancel()
         com.alananasss.kittytune.utils.NativeMemoryManager.trim()
+    }
+
+    /** Same-track engine replacement keeps the existing global verdict and karaoke identity. */
+    fun takeOverSameTrackPlayback() {
+        announcesTrackChanges = true
+        trackActivationStarted = true
+        aiDetection.notifySeek(positionMs)
+    }
+
+    /** A next-track prebuffer becomes current only here; preparing it never announces a track change. */
+    @Synchronized
+    fun activateTrackPlayback() {
+        if (trackActivationStarted) return
+        trackActivationStarted = true
+        pendingTrackActivation = false
+        announcesTrackChanges = true
+        com.alananasss.kittytune.audio.ai.AiDetectionManager.resetResult()
+        currentTrackId?.let { com.alananasss.kittytune.audio.ai.karaoke.KaraokeManager.notifyTrackChanged(it) }
+        aiDetection.notifySeek(positionMs)
+        val prefs = PlayerPreferences()
+        val url = currentUrl
+        if (url != null && (prefs.aiShowBadge || prefs.aiAutoSkip)) {
+            com.alananasss.kittytune.audio.ai.AiDetectionManager.analyzeTrackUpfront(url, currentHeaders, hlsAdapter)
+        }
+    }
+
+    @Synchronized
+    internal fun activateDeferredPreparation() {
+        if (!isPreparationDeferred) return
+        isPreparationDeferred = false
+        if (pendingTrackActivation) activateTrackPlayback()
     }
 
     fun onKaraokeStemReady(trackId: Long) {
@@ -628,6 +684,7 @@ class AudioEngine {
 
         val pitch = if (state.isPitchEnabled) state.speed else 1f
         stretcher.setParameters(state.speed, pitch)
+        hasAutomixStretch = false
 
         limiter.setCeiling(peakLimiterCeilingFor(state))
     }
@@ -641,11 +698,46 @@ class AudioEngine {
     }
 
     fun setStretcherRatio(tempoRatio: Float, pitchRatio: Float) {
+        hasAutomixStretch = tempoRatio != 1f || pitchRatio != 1f
         val baseSpeed = effects.speed
         val basePitch = if (effects.isPitchEnabled) baseSpeed else 1f
         val adjSpeed = (baseSpeed * tempoRatio).coerceIn(0.5f, 2.0f)
         val adjPitch = (basePitch * pitchRatio).coerceIn(0.5f, 2.0f)
         stretcher.setParameters(adjSpeed, adjPitch)
+    }
+
+    internal val canPrepareTrimSplice: Boolean
+        get() {
+            val url = currentUrl ?: return false
+            val container = openedContainer ?: return false
+            if (hasAutomixStretch || isSeeking || state != State.READY || durationMs <= 0L ||
+                hlsAdapter != null || container.contains("hls", true) || container.contains("dash", true) ||
+                url.contains("/deezer-stream") || SignedUrl.isExpired(url)
+            ) return false
+            return if (SignedUrl.isNetworkUrl(url)) url.startsWith("http://") || url.startsWith("https://")
+            else runCatching {
+                val file = if (url.startsWith("file:")) java.io.File(java.net.URI(url)) else java.io.File(url)
+                file.isFile && file.canRead()
+            }.getOrDefault(false)
+        }
+
+    internal fun prepareTrimSpliceHead(positionMs: Long): AudioEngine? {
+        if (!canPrepareTrimSplice) return null
+        val url = currentUrl ?: return null
+        val incoming = AudioEngine()
+        try {
+            incoming.applyEffects(effects)
+            val loudness = getIntegratedLoudness()
+            if (loudness in -60f..-0.001f) incoming.setTrackLoudness(loudness, getMaxTruePeakDb())
+            incoming.setTrackGainDb(trackGainDb)
+            incoming.setVolume(0f)
+            incoming.setMediaItem(url, currentHeaders, positionMs, vocalRemover.getCurrentTrackId(), announceTrackChange = false)
+            incoming.preparePrimedHead()
+            return incoming
+        } catch (error: Exception) {
+            incoming.release(preserveTrackState = true)
+            throw error
+        }
     }
 
 
@@ -828,6 +920,7 @@ class AudioEngine {
             } else {
                 grabber.lengthInTime / 1000L
             }
+            openedContainer = grabber.format
 
             localLine = openLine()
             hasBufferedAudio = false
@@ -926,7 +1019,7 @@ class AudioEngine {
 
                     if (revision != seekRevision) continue
                     // Discard old audio before queuing the first frame at the new position.
-                    aiDetection.notifySeek(seek)
+                    if (announcesTrackChanges) aiDetection.notifySeek(seek)
                     vocalRemover.seekToPositionMs(seek)
                     vocalBoost.seekToPositionMs(seek)
                     stretcher.flush()
@@ -978,7 +1071,9 @@ class AudioEngine {
                     }
                 }
 
-                if (paused) {
+                if (paused && primeWhilePaused) primeFromStretcher(seekRevision, (grabber?.timestamp ?: 0L) / 1000L)
+
+                if (paused && (!primeWhilePaused || primedAudio != null)) {
                     // A line left running with nothing written to it underruns, and on some Windows drivers
                     // an underrun replays the last bit of the buffer: a short fragment of the song every few
                     // seconds for as long as it stayed paused (issue #66). Stopped, it holds still, and the
@@ -987,7 +1082,8 @@ class AudioEngine {
                     Thread.sleep(20)
                     continue
                 }
-                localLine?.let { if (!it.isRunning) it.start() }
+                localLine?.let { if (paused) it.stop() else if (!it.isRunning) it.start() }
+                if (!paused) writePrimedAudio(localLine)
 
                 val readRevision = seekRevision
                 var frame: Frame? = null
@@ -1000,6 +1096,7 @@ class AudioEngine {
 
                 if (readRevision != seekRevision || seekRequestMs >= 0L) continue
                 if (frame == null) {
+                    if (paused && primeWhilePaused) throw IllegalStateException("Unable to prime trim audio head")
                     if (!stopFlag && activeWorkerId == workerId) {
                         val isNearEnd = (durationMs > 0 && positionMs >= durationMs - 3000L) || (durationMs == 0L)
                         if (isNearEnd) {
@@ -1028,10 +1125,13 @@ class AudioEngine {
 
                 val samples = frame.samples ?: continue
                 pushFrame(samples, frame.audioChannels)
-                drainStretcher(outBuf, localLine, readRevision)
-
                 val decodedPositionMs = (grabber?.timestamp ?: 0L) / 1000L
-                publishDecodedPosition(decodedPositionMs, readRevision)
+                if (paused && primeWhilePaused) {
+                    primeFromStretcher(readRevision, decodedPositionMs)
+                } else {
+                    drainStretcher(outBuf, localLine, readRevision)
+                    publishDecodedPosition(decodedPositionMs, readRevision)
+                }
             }
         } catch (t: Throwable) {
             if (!stopFlag && activeWorkerId == workerId) {
@@ -1054,6 +1154,40 @@ class AudioEngine {
             } else decodedPositionMs.coerceAtLeast(0L)
             true
         }
+
+    internal fun holdPrimedAudio(samples: ShortArray, count: Int, revision: Long, decodedPositionMs: Long): Boolean =
+        synchronized(seekLock) {
+            if (!primeWhilePaused || !paused || revision != seekRevision || seekRequestMs >= 0L ||
+                primedAudio != null || count != primedHeadSamples || samples.size < count
+            ) return@synchronized false
+            primedRevision = revision
+            primedPositionMs = decodedPositionMs
+            primedAudio = samples.copyOf(count)
+            true
+        }
+
+    private fun primeFromStretcher(revision: Long, decodedPositionMs: Long) {
+        if (primedAudio != null || stretcher.available() < primedHeadSamples) return
+        val samples = ShortArray(primedHeadSamples)
+        val count = stretcher.drain(samples, samples.size)
+        holdPrimedAudio(samples, count, revision, decodedPositionMs)
+    }
+
+    internal fun writePrimedAudio(localLine: SourceDataLine?) {
+        val held = synchronized(seekLock) {
+            val samples = primedAudio ?: return
+            primedAudio = null
+            if (primedRevision != seekRevision || seekRequestMs >= 0L) return
+            Triple(samples, primedRevision, primedPositionMs)
+        }
+        writeToLine(held.first, held.first.size, localLine, held.second)
+        if (hasBufferedAudio) publishDecodedPosition(held.third, held.second)
+    }
+
+    private fun discardPrimedAudio() {
+        primeWhilePaused = false
+        primedAudio = null
+    }
 
     private var interleaveBuffer = ShortArray(0)
     private var decodeBuffer = FloatArray(0)
@@ -1144,6 +1278,7 @@ class AudioEngine {
         buf.limit(requiredBytes)
 
         for (p in chain) {
+            if (p === aiDetection && !announcesTrackChanges) continue
             p.queueInput(buf)
             buf = p.getOutput()
         }
@@ -1262,6 +1397,7 @@ class AudioEngine {
         warmUpRequested = false
         stopFlag = true
         hasBufferedAudio = false
+        discardPrimedAudio()
         activeWorkerId++
         paused = true
         val currentWorker = worker

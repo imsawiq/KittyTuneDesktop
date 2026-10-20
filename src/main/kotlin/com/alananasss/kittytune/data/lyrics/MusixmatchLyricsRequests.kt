@@ -9,6 +9,8 @@ import com.alananasss.kittytune.data.network.MxmTrackBody
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** These endpoints describe the same track and do not depend on each other's response. */
@@ -23,12 +25,36 @@ internal object MusixmatchLyricsRequests {
             plain?.message?.header, track?.message?.header).any { it?.statusCode == 401 && it.hint == "renew" }
     }
 
-    suspend fun fetch(api: MusixmatchApiService, trackId: Long, token: String): Responses = supervisorScope {
-        val subtitle = async { optional { api.getSubtitle(trackId = trackId, token = token) } }
-        val richSync = async { optional { api.getRichSync(trackId, token) } }
-        val plain = async { optional { api.getLyrics(trackId, token) } }
-        val track = async { optional { api.getTrack(trackId, token = token) } }
-        Responses(subtitle.await(), richSync.await(), plain.await(), track.await())
+    suspend fun fetch(
+        api: MusixmatchApiService,
+        trackId: Long,
+        token: String,
+        onResponses: suspend (Responses) -> Unit = {},
+    ): Responses = supervisorScope {
+        val updates = Mutex()
+        var responses = Responses(null, null, null, null)
+        suspend fun publish(update: (Responses) -> Responses) = updates.withLock {
+            responses = update(responses)
+            onResponses(responses)
+        }
+        val subtitle = async {
+            val result = optional { api.getSubtitle(trackId = trackId, token = token) }
+            publish { it.copy(subtitle = result) }
+        }
+        val richSync = async {
+            val result = optional { api.getRichSync(trackId, token) }
+            publish { it.copy(richSync = result) }
+        }
+        val plain = async {
+            val result = optional { api.getLyrics(trackId, token) }
+            publish { it.copy(plain = result) }
+        }
+        val track = async {
+            val result = optional { api.getTrack(trackId, token = token) }
+            publish { it.copy(track = result) }
+        }
+        subtitle.await(); richSync.await(); plain.await(); track.await()
+        responses
     }
 
     private suspend fun <T> optional(request: suspend () -> T): T? = withTimeoutOrNull(7_000) {

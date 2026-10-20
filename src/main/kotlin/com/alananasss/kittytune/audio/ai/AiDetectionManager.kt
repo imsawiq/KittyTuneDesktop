@@ -194,18 +194,7 @@ object AiDetectionManager {
         synchronized(initLock) {
             val prefs = PlayerPreferences()
             val preferredModel = prefs.aiSelectedModel
-            _currentModelFlow.value = preferredModel
-
-            // Update download state statuses for both models
-            for (m in AiModelType.entries) {
-                val stateFlow = downloadStates.getOrPut(m) { MutableStateFlow(ModelDownloadState.NotDownloaded) }
-                if (isModelReady(m)) {
-                    stateFlow.value = ModelDownloadState.Ready
-                } else if (stateFlow.value !is ModelDownloadState.Downloading) {
-                    stateFlow.value = ModelDownloadState.NotDownloaded
-                }
-            }
-            _downloadState.value = downloadStates[preferredModel]?.value ?: ModelDownloadState.NotDownloaded
+            refreshModelAvailabilityLocked(prefs)
 
             if (isModelLoaded()) return
 
@@ -216,6 +205,25 @@ object AiDetectionManager {
             }
 
             initArtifactNet(prefs)
+        }
+    }
+
+    /** Startup can show installed models without mapping a model or creating an inference runtime. */
+    fun refreshModelAvailability() {
+        synchronized(initLock) { refreshModelAvailabilityLocked(PlayerPreferences()) }
+    }
+
+    private fun refreshModelAvailabilityLocked(prefs: PlayerPreferences) {
+        val preferredModel = prefs.aiSelectedModel
+        _currentModelFlow.value = preferredModel
+        for (model in AiModelType.entries) {
+            val state = downloadStates.getOrPut(model) { MutableStateFlow(ModelDownloadState.NotDownloaded) }
+            if (isModelReady(model)) state.value = ModelDownloadState.Ready
+            else if (state.value !is ModelDownloadState.Downloading) state.value = ModelDownloadState.NotDownloaded
+        }
+        _downloadState.value = downloadStates[preferredModel]?.value ?: ModelDownloadState.NotDownloaded
+        if (!isModelLoaded() && !isModelReady(preferredModel)) {
+            _activeAccelerationProvider.value = "${preferredModel.runtimeTag} (Not Downloaded)"
         }
     }
 
