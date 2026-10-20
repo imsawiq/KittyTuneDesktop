@@ -24,8 +24,12 @@ internal enum class DownloadAudioFormat(val extension: String) {
 
         fun isHls(mimeType: String?, url: String): Boolean {
             val mime = mimeType?.substringBefore(';')?.trim()?.lowercase(Locale.ROOT)
+            // Signed query parameters can contain another URL or an arbitrary filename. They do
+            // not describe this response's container and must not trigger a lossy HLS conversion.
+            val path = runCatching { URI(url).path?.lowercase(Locale.ROOT) }.getOrNull().orEmpty()
             return mime in setOf("application/vnd.apple.mpegurl", "application/x-mpegurl", "audio/mpegurl") ||
-                url.contains(".m3u8", ignoreCase = true) || url.contains("/hls", ignoreCase = true)
+                path.endsWith(".m3u8") ||
+                (fromMime(mime) == null && path.split('/').any { it == "hls" })
         }
 
         fun sniff(file: File): DownloadAudioFormat? =

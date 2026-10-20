@@ -2,6 +2,8 @@ package com.alananasss.kittytune.data
 
 import com.alananasss.kittytune.data.discord.DiscordIpcConnection
 import com.alananasss.kittytune.data.discord.DiscordPresencePayload
+import com.alananasss.kittytune.data.discord.DiscordPresenceTransport
+import com.alananasss.kittytune.data.local.DiscordStatusDisplay
 import com.alananasss.kittytune.data.local.PlayerPreferences
 import com.alananasss.kittytune.domain.Track
 import kotlinx.coroutines.*
@@ -10,10 +12,21 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /** Rich Presence uses the running Discord desktop client, without login or user tokens. */
-class DiscordRPC {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+class DiscordRPC internal constructor(
+    private val scope: CoroutineScope,
+    private val connect: () -> DiscordPresenceTransport?,
+    private val statusDisplay: () -> DiscordStatusDisplay,
+) {
+    constructor() : this(
+        CoroutineScope(SupervisorJob() + Dispatchers.IO),
+        { DiscordIpcConnection.connect(APPLICATION_ID) },
+        { PlayerPreferences().getDiscordStatusDisplay() },
+    )
+
     private val updates = Channel<String>(Channel.CONFLATED)
-    @Volatile private var connection: DiscordIpcConnection? = null
+    private val lifecycleLock = Any()
+    @Volatile private var closed = false
+    @Volatile private var connection: DiscordPresenceTransport? = null
 
     init {
         scope.launch {
@@ -23,15 +36,31 @@ class DiscordRPC {
                 while (isActive) {
                     val received = withTimeoutOrNull(5_000) { updates.receive() }
                     if (received != null) latest = received
-                    val activity = latest ?: continue
+                    var activity = latest ?: continue
+                    // Clearing an idle session must not open Discord just to publish null.
+                    if (activity == "null" && connection?.isOpen != true) continue
                     if (connection?.isOpen != true) {
-                        _status.value = Status.CONNECTING
+                        setStatus(Status.CONNECTING)
                         connection?.close()
-                        connection = DiscordIpcConnection.connect(APPLICATION_ID)
+                        val connected = connect()
+                        val adopted = synchronized(lifecycleLock) {
+                            if (closed || !isActive) false else {
+                                connection = connected
+                                _status.value = if (connected == null) Status.DISCONNECTED else Status.CONNECTED
+                                true
+                            }
+                        }
+                        if (!adopted) {
+                            connected?.close()
+                            break
+                        }
                         sent = null
-                        _status.value = if (connection == null) Status.DISCONNECTED else Status.CONNECTED
                         if (connection == null) { delay(10_000); continue }
                     }
+                    ensureActive()
+                    // A handshake may take seconds. Publish the latest track/clear request,
+                    // rather than resurrecting the activity that initiated the connection.
+                    updates.tryReceive().getOrNull()?.let { latest = it; activity = it }
                     if (sent != activity) {
                         try {
                             connection?.send(DiscordPresencePayload.command(activity))
@@ -41,11 +70,11 @@ class DiscordRPC {
                         } catch (_: java.io.IOException) {
                             connection?.close()
                             connection = null
-                            _status.value = Status.DISCONNECTED
+                            setStatus(Status.DISCONNECTED)
                         } catch (_: IllegalStateException) {
                             connection?.close()
                             connection = null
-                            _status.value = Status.DISCONNECTED
+                            setStatus(Status.DISCONNECTED)
                         }
                     }
                 }
@@ -58,7 +87,7 @@ class DiscordRPC {
 
     suspend fun updatePresence(track: Track, contextName: String?, isPlaying: Boolean, position: Long) {
         val payload = DiscordPresencePayload.activity(
-            track, contextName, isPlaying, position, PlayerPreferences().getDiscordStatusDisplay())
+            track, contextName, isPlaying, position, statusDisplay())
         updates.trySend(payload)
     }
 
@@ -68,10 +97,18 @@ class DiscordRPC {
 
     fun closeRPC() {
         // Closing the IPC transport clears this application's activity in the client.
+        val current = synchronized(lifecycleLock) {
+            closed = true
+            _status.value = Status.DISABLED
+            connection.also { connection = null }
+        }
         scope.cancel()
-        connection?.close()
+        current?.close()
         updates.close()
-        _status.value = Status.DISABLED
+    }
+
+    private fun setStatus(status: Status) = synchronized(lifecycleLock) {
+        if (!closed) _status.value = status
     }
 
     enum class Status { DISABLED, CONNECTING, CONNECTED, DISCONNECTED }

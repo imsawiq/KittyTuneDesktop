@@ -58,7 +58,7 @@ class WindowsFullScreenIntegrationTest {
             val currentFrame = frame!!
             assertNotNull("Native window pointer must be resolved on Windows/Wine", WindowsFullScreen.handleOf(currentFrame))
 
-            val initialBounds = currentFrame.bounds
+            val initialBounds = boundsOnEdt(currentFrame)
             assertEquals(150, initialBounds.x)
             assertEquals(120, initialBounds.y)
             assertEquals(800, initialBounds.width)
@@ -93,10 +93,7 @@ class WindowsFullScreenIntegrationTest {
             assertEquals("Style after exit must match original pre-fullscreen style", initialStyle, exitedStyle)
 
             // Bounds must match original pre-fullscreen dimensions
-            assertEquals("Restored width must equal pre-fullscreen width", 800, currentFrame.bounds.width)
-            assertEquals("Restored height must equal pre-fullscreen height", 600, currentFrame.bounds.height)
-            assertEquals("Restored X must equal pre-fullscreen X", 150, currentFrame.bounds.x)
-            assertEquals("Restored Y must equal pre-fullscreen Y", 120, currentFrame.bounds.y)
+            assertEquals("Restored bounds must equal pre-fullscreen bounds", initialBounds, boundsOnEdt(currentFrame))
 
             // 3. Repeated fullscreen enter/exit cycle (reproducing the reported issue)
             for (i in 1..5) {
@@ -110,10 +107,7 @@ class WindowsFullScreenIntegrationTest {
                 }
                 assertFalse("Must not be fullscreen on iteration $i", WindowsFullScreen.isFullScreen)
 
-                assertEquals("Iteration $i: Width should remain preserved", 800, currentFrame.bounds.width)
-                assertEquals("Iteration $i: Height should remain preserved", 600, currentFrame.bounds.height)
-                assertEquals("Iteration $i: X should remain preserved", 150, currentFrame.bounds.x)
-                assertEquals("Iteration $i: Y should remain preserved", 120, currentFrame.bounds.y)
+                assertEquals("Iteration $i: Bounds should remain preserved", initialBounds, boundsOnEdt(currentFrame))
             }
         } finally {
             frame?.let { f ->
@@ -122,5 +116,11 @@ class WindowsFullScreenIntegrationTest {
                 }
             }
         }
+    }
+    /** Read one coherent AWT snapshot after any frame-inset refresh has completed on the EDT. */
+    private fun boundsOnEdt(frame: Frame): Rectangle {
+        var bounds: Rectangle? = null
+        SwingUtilities.invokeAndWait { bounds = frame.bounds }
+        return requireNotNull(bounds)
     }
 }

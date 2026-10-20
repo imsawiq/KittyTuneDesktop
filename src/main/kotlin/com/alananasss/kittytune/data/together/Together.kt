@@ -133,7 +133,7 @@ object Together {
     private var lastSentQueueVersion = -1
     private var queueVersion = 0
     private var lastUpcomingIds: List<Long> = emptyList()
-    private val lastStateAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val peerTimeline = TogetherPeerTimeline()
     private var incomingJob: Job? = null
 
     fun isHostOf(code: String): Boolean = _rooms.value[code]?.hostId == memberId
@@ -188,6 +188,7 @@ object Together {
         persistSaved()
         scope.launch { relay.unfollow(code) }
         _rooms.value = _rooms.value - code
+        peerTimeline.forget(code)
     }
 
     private fun addSaved(saved: Saved) {
@@ -360,10 +361,10 @@ object Together {
         if (message.from == memberId) return
         val now = System.currentTimeMillis()
         when (message) {
-            is TogetherMessage.Hello -> updateRoom(code) { r ->
+            is TogetherMessage.Hello -> if (peerTimeline.acceptHello(code, message.from, message.sentAt)) updateRoom(code) { r ->
                 r.copy(members = r.members + (message.from to Member(message.from, message.name, message.isListening, now)))
             }
-            is TogetherMessage.Bye -> updateRoom(code) { r ->
+            is TogetherMessage.Bye -> if (peerTimeline.acceptDeparture(code, message.from, message.sentAt)) updateRoom(code) { r ->
                 val leaving = r.members[message.from]
                 r.copy(
                     members = if (leaving != null) r.members + (message.from to leaving.copy(isListening = false)) else r.members,
@@ -375,15 +376,14 @@ object Together {
                 // rule to the same claims, so everyone agrees on the host.
                 val newer = message.sentAt > r.hostClaimedAt ||
                     (message.sentAt == r.hostClaimedAt && message.from > (r.hostId ?: ""))
-                if (newer) r.copy(hostId = message.from, hostSeenAt = now, hostClaimedAt = message.sentAt) else r
+                if (newer && peerTimeline.acceptHostActivity(code, message.from, message.sentAt)) {
+                    r.copy(hostId = message.from, hostSeenAt = now, hostClaimedAt = message.sentAt)
+                } else r
             }
             is TogetherMessage.State -> {
                 val existing = _rooms.value[code]
                 if (!TogetherPlaybackPolicy.acceptsHost(existing?.takeIf { it.hasLiveHost }?.hostId, message.from)) return
-                val stateKey = "$code:${message.from}"
-                val previous = lastStateAt[stateKey]
-                if (previous != null && message.sentAt < previous) return
-                lastStateAt[stateKey] = message.sentAt
+                if (!peerTimeline.acceptState(code, message.from, message.sentAt)) return
                 updateRoom(code) { it.copy(hostId = message.from, hostSeenAt = now, nowPlaying = message.track, isPlaying = message.isPlaying, automix = message.automix) }
                 if (_active.value == code && !isHostOf(code)) {
                     val room = _rooms.value[code]
@@ -489,7 +489,7 @@ object Together {
         tickJob?.cancel()
         tickJob = null
         quickestTrip.clear()
-        lastStateAt.clear()
+        peerTimeline.clear()
         incomingJob?.cancel()
         incomingJob = null
         Prefs.remove(KEY_SAVED)

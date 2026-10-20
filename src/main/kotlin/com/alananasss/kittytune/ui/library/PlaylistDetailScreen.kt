@@ -2146,6 +2146,9 @@ fun TrackListItem(
                         Spacer(Modifier.width(4.dp))
                         Icon(Icons.Rounded.Verified, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(12.dp))
                     }
+                    if (isDownloaded && !isDownloading) {
+                        com.alananasss.kittytune.ui.common.TrackLosslessBadge(track.id)
+                    }
                     com.alananasss.kittytune.ui.common.TrackRowSocialMarkers(track, showLikeIndicator)
                 }
             }
@@ -2390,6 +2393,9 @@ fun TrackTableItem(
                         if (showVerifiedBadge && track.user?.verified == true) {
                             Spacer(Modifier.width(4.dp))
                             Icon(Icons.Rounded.Verified, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(12.dp))
+                        }
+                        if (isDownloaded && !isDownloading) {
+                            com.alananasss.kittytune.ui.common.TrackLosslessBadge(track.id)
                         }
                         com.alananasss.kittytune.ui.common.TrackRowSocialMarkers(track, showLikeIndicator)
                     }
@@ -2703,6 +2709,7 @@ fun TrackCompactItem(
                     if (isDownloaded && !isDownloading) {
                         Spacer(Modifier.width(6.dp))
                         Icon(Icons.Rounded.DownloadDone, str("btn_downloaded"), modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
+                        com.alananasss.kittytune.ui.common.TrackLosslessBadge(track.id)
                     }
                     // In the compact table the artist has its own fixed column, so the markers ride
                     // at the end of the title cell instead of after the artist name.

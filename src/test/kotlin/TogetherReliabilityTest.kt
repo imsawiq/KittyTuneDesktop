@@ -52,4 +52,54 @@ class TogetherReliabilityTest {
         assertEquals("Artist", song.toTrack().displayArtist)
         assertEquals("Uploader", song.toTrack().user?.username)
     }
+
+    @Test fun `delayed hello cannot return a departed listener to the room`() = runBlocking {
+        Together.handle(code, TogetherMessage.Hello("friend", 100, "Friend", true))
+        Together.handle(code, TogetherMessage.Bye("friend", 200))
+        Together.handle(code, TogetherMessage.Hello("friend", 150, "Old name", true))
+        Together.handle(code, TogetherMessage.Hello("friend", 200, "Same millisecond", true))
+
+        assertTrue(Together.rooms.value.getValue(code).listeners.isEmpty())
+        assertEquals("Friend", Together.rooms.value.getValue(code).members.getValue("friend").name)
+    }
+
+    @Test fun `delayed bye cannot remove a listener who has rejoined`() = runBlocking {
+        Together.handle(code, TogetherMessage.Hello("friend", 100, "Friend", true))
+        Together.handle(code, TogetherMessage.Bye("friend", 200))
+        Together.handle(code, TogetherMessage.Hello("friend", 300, "Friend returned", true))
+        Together.handle(code, TogetherMessage.Bye("friend", 200))
+
+        assertEquals(listOf("Friend returned"), Together.rooms.value.getValue(code).listeners.map { it.name })
+    }
+
+    @Test fun `delayed departure cannot evict a host with a newer playback snapshot`() = runBlocking {
+        Together.handle(code, TogetherMessage.ClaimHost("host", 100))
+        Together.handle(code, TogetherMessage.State("host", 300, song, 30_000, false, false, 0))
+        Together.handle(code, TogetherMessage.Bye("host", 200))
+
+        assertEquals("host", Together.rooms.value.getValue(code).hostId)
+        assertFalse(Together.rooms.value.getValue(code).isPlaying)
+    }
+
+    @Test fun `state and claim sent before departure cannot revive the old host`() = runBlocking {
+        Together.handle(code, TogetherMessage.ClaimHost("host", 100))
+        Together.handle(code, TogetherMessage.State("host", 110, song, 30_000, true, false, 0))
+        Together.handle(code, TogetherMessage.Bye("host", 200))
+        Together.handle(code, TogetherMessage.State("host", 150, song, 40_000, true, false, 0))
+        Together.handle(code, TogetherMessage.ClaimHost("host", 180))
+
+        assertNull(Together.rooms.value.getValue(code).hostId)
+
+        Together.handle(code, TogetherMessage.ClaimHost("host", 300))
+        assertEquals("host", Together.rooms.value.getValue(code).hostId)
+    }
+
+    @Test fun `presence ordering is isolated between rooms and between sender clocks`() = runBlocking {
+        Together.handle(code, TogetherMessage.Bye("friend", 5_000))
+        Together.handle(code, TogetherMessage.Hello("another-friend", 100, "Different clock", true))
+        Together.handle("OTHER234", TogetherMessage.Hello("friend", 100, "Other room", true))
+
+        assertEquals(listOf("Different clock"), Together.rooms.value.getValue(code).listeners.map { it.name })
+        assertEquals(listOf("Other room"), Together.rooms.value.getValue("OTHER234").listeners.map { it.name })
+    }
 }

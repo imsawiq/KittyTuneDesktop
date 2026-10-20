@@ -6,7 +6,6 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.toComposeImageBitmap
 import com.alananasss.kittytune.audio.VolumeCurve
 import com.alananasss.kittytune.audio.openPlaybackLine
 import com.alananasss.kittytune.data.MusicManager
@@ -23,10 +22,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.bytedeco.ffmpeg.global.avutil
 import org.bytedeco.javacv.FFmpegFrameGrabber
-import org.jetbrains.skia.ColorAlphaType
-import org.jetbrains.skia.ColorType
-import org.jetbrains.skia.Image
-import org.jetbrains.skia.ImageInfo
 import java.nio.ShortBuffer
 import java.util.concurrent.atomic.AtomicLong
 import javax.sound.sampled.AudioFormat
@@ -202,7 +197,7 @@ class ClipPlayback(
                             if (isPaused) {
                                 val generation = seekGeneration.get()
                                 val preview = grabber.grabImage()
-                                if (preview != null && pendingSeekMs.get() == NO_SEEK && generation == seekGeneration.get()) frame = toBitmap(preview)
+                                if (preview != null && pendingSeekMs.get() == NO_SEEK && generation == seekGeneration.get()) frame = clipFrameImage(preview)
                             }
                         }
                         if (isPaused) {
@@ -232,7 +227,7 @@ class ClipPlayback(
                             next.samples?.let { samples -> line?.let { bytes = writeSamples(samples, it, bytes) } }
                         }
                         if (next.image != null) {
-                            val bmp = toBitmap(next)
+                            val bmp = clipFrameImage(next)
                             if (bmp != null) {
                                 val qf = DecodedVideo(next.timestamp, bmp, generation)
                                 while (isActive && videoQueue.trySend(qf).isFailure) {
@@ -300,18 +295,6 @@ class ClipPlayback(
             }
         }
         return bytes
-    }
-
-    /** One decoded picture (BGRA, as the grabber was asked for) as an image Compose can draw. */
-    private fun toBitmap(decoded: org.bytedeco.javacv.Frame): ImageBitmap? {
-        val buffer = decoded.image?.firstOrNull() as? java.nio.ByteBuffer ?: return null
-        val width = decoded.imageWidth
-        val height = decoded.imageHeight
-        if (width <= 0 || height <= 0) return null
-        val pixels = ByteArray(decoded.imageStride * height)
-        buffer.duplicate().get(pixels, 0, minOf(pixels.size, buffer.remaining()))
-        val info = ImageInfo(width, height, ColorType.BGRA_8888, ColorAlphaType.OPAQUE)
-        return Image.makeRaster(info, pixels, decoded.imageStride).toComposeImageBitmap()
     }
 
     /** Where playback is, in microseconds: the sound actually played, or the wall clock when there is none. */

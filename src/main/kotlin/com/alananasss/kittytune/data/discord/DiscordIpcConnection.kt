@@ -20,8 +20,8 @@ internal class DiscordIpcConnection internal constructor(
     private val input: InputStream,
     private val output: OutputStream,
     private val transport: Closeable,
-) : Closeable {
-    @Volatile var isOpen = true
+) : DiscordPresenceTransport {
+    @Volatile override var isOpen = true
         private set
     private val ready = CountDownLatch(1)
     private val writeLock = Any()
@@ -32,7 +32,7 @@ internal class DiscordIpcConnection internal constructor(
         return ready.await(3, TimeUnit.SECONDS) && isOpen
     }
 
-    fun send(command: String) = write(1, command.toByteArray(Charsets.UTF_8))
+    override fun send(command: String) = write(1, command.toByteArray(Charsets.UTF_8))
 
     private fun write(opcode: Int, payload: ByteArray) {
         require(payload.size <= MAX_FRAME_SIZE)

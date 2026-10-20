@@ -52,6 +52,31 @@ class ReleaseCatalogTest {
     }
 
     @Test
+    fun `numeric album ids never suppress standalone songs from another provider`() {
+        for (provider in listOf("qobuz", "tidal", "deezer")) {
+            val song = track(1, "Opening").copy(
+                source = provider,
+                publisherMetadata = Track.PublisherMetadata(albumId = "10"),
+            )
+            val soundCloudAlbum = record(10, "Album")
+            val providerAlbum = soundCloudAlbum.copy(urn = "$provider:album:10", permalink = "10")
+            assertFalse(ReleaseCatalog.belongsTo(song, soundCloudAlbum), provider)
+            assertTrue(ReleaseCatalog.belongsTo(song, providerAlbum), provider)
+            assertEquals(2, ArtistRelease.latestOf(listOf(song), listOf(soundCloudAlbum), 10).size)
+        }
+    }
+
+    @Test
+    fun `matching album title and artist are only evidence inside the same provider`() {
+        val song = track(1, "Opening", "Album").copy(source = "qobuz")
+        val album = record(10, "Album")
+        assertFalse(ReleaseCatalog.belongsTo(song, album))
+        assertFalse(ReleaseCatalog.belongsTo(song, album.copy(urn = "tidal:album:10")))
+        assertTrue(ReleaseCatalog.belongsTo(song, album.copy(urn = "qobuz:album:10")))
+        assertTrue(ReleaseCatalog.belongsTo(song, album.copy(permalinkUrl = "https://www.qobuz.com/album/10")))
+    }
+
+    @Test
     fun `repeated records are shown once and chronological release order wins`() {
         val old = record(10, "Old").copy(releaseDate = "2025-01-01")
         val recent = track(1, "Single").copy(releaseDate = "2026-10-17")

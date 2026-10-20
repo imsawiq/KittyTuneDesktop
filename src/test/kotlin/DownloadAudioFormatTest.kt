@@ -25,6 +25,28 @@ class DownloadAudioFormatTest {
         assertEquals(DownloadAudioFormat.MP3, DownloadAudioFormat.forStream(null, "https://example.test/stream?filename=fake.flac", false))
     }
 
+    @Test fun `signed query hints cannot turn a direct FLAC download into lossy HLS`() {
+        val urls = listOf(
+            "https://example.test/song.flac?fallback=playlist.m3u8",
+            "https://example.test/song.flac?redirect=https://cdn.test/hls/manifest",
+            "https://example.test/hls/song.flac?signature=123",
+            "https://example.test/hlstudio/song.flac",
+        )
+        for (url in urls) {
+            val isHls = DownloadAudioFormat.isHls("audio/flac", url)
+            assertFalse(isHls, url)
+            assertEquals(DownloadAudioFormat.FLAC, DownloadAudioFormat.forStream("audio/flac", url, isHls))
+        }
+    }
+
+    @Test fun `HLS path and MIME detection survive signed and opaque URLs`() {
+        assertTrue(DownloadAudioFormat.isHls(null, "https://example.test/PLAYLIST.M3U8?signature=123"))
+        assertTrue(DownloadAudioFormat.isHls(null, "https://example.test/hls/stream?signature=123"))
+        assertTrue(DownloadAudioFormat.isHls("Application/Vnd.Apple.Mpegurl; charset=utf-8", "https://example.test/stream"))
+        assertFalse(DownloadAudioFormat.isHls(null, "https://example.test/hlstudio/stream"))
+        assertFalse(DownloadAudioFormat.isHls(null, "https://example.test/song.flac?fallback=/hls/stream"))
+    }
+
     @Test fun `container magic takes precedence over a legacy MP3 filename`() {
         val file = Files.createTempFile("kittytune-flac-", ".mp3")
         try {
