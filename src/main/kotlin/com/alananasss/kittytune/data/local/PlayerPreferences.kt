@@ -21,6 +21,9 @@ import com.alananasss.kittytune.data.lyrics.clients.PaxsenixClient
 enum class AppThemeMode { SYSTEM, LIGHT, DARK }
 enum class StartDestination { HOME, LIBRARY }
 enum class MiniPlayerStyle { STANDARD, ELONGATED }
+
+/** What the mini player shows in its text area. */
+enum class MiniPlayerContentMode { AUTO, TITLE_AND_ARTIST, LYRICS, BOTH }
 enum class LyricsScreenContext { MAIN, FULLSCREEN, SIDEBAR }
 
 /**
@@ -263,6 +266,8 @@ class PlayerPreferences {
         private const val KEY_MINI_PLAYER_HOVER_EFFECT = "mini_player_hover_effect"
         private const val KEY_MINI_PLAYER_HOVER_ILLUMINATION = "mini_player_hover_illumination"
         private const val KEY_MINI_PLAYER_SHOW_PROGRESS = "mini_player_show_progress"
+        private const val KEY_MINI_PLAYER_CONTENT_MODE = "mini_player_content_mode"
+        const val DEFAULT_MINI_PLAYER_CONTENT_MODE = "AUTO"
         private const val KEY_MINI_PLAYER_STYLE = "mini_player_style"
         const val DEFAULT_MINI_PLAYER_STYLE = "STANDARD"
         private const val KEY_MINI_PLAYER_TRANSPARENT_BG = "mini_player_transparent_bg"
@@ -487,7 +492,13 @@ class PlayerPreferences {
         private const val KEY_AUTOMIX_HARMONIC_MIX = "automix_harmonic_mix"
         private const val KEY_AUTOMIX_DYNAMIC_MIX_POINTS = "automix_dynamic_mix_points"
         private const val KEY_AUTOMIX_BASS_DUCKING = "automix_bass_ducking"
+        const val AUTOMIX_OVERLAP_AUTO = 0
+        const val AUTOMIX_OVERLAP_2BARS = 1
+        const val AUTOMIX_OVERLAP_4BARS = 2
+        const val AUTOMIX_OVERLAP_8BARS = 3
+        const val AUTOMIX_OVERLAP_CUSTOM = 4
         private const val KEY_AUTOMIX_OVERLAP_MODE = "automix_overlap_mode"
+        private const val KEY_AUTOMIX_OVERLAP_CUSTOM_SEC = "automix_overlap_custom_sec"
         const val AUTOMIX_START_OFFSET_AUTO = 0
         const val AUTOMIX_START_OFFSET_BEGINNING = 1
         const val AUTOMIX_START_OFFSET_CUSTOM = 2
@@ -682,8 +693,15 @@ class PlayerPreferences {
     fun getAutomixBassDuckingEnabled(): Boolean = Prefs.getBoolean(KEY_AUTOMIX_BASS_DUCKING, true)
     fun setAutomixBassDuckingEnabled(enabled: Boolean) = Prefs.putBoolean(KEY_AUTOMIX_BASS_DUCKING, enabled)
 
-    fun getAutomixOverlapMode(): Int = Prefs.getInt(KEY_AUTOMIX_OVERLAP_MODE, 0)
-    fun setAutomixOverlapMode(mode: Int) = Prefs.putInt(KEY_AUTOMIX_OVERLAP_MODE, mode)
+    fun getAutomixOverlapMode(): Int = Prefs.getInt(KEY_AUTOMIX_OVERLAP_MODE, AUTOMIX_OVERLAP_AUTO)
+        .takeIf { it in AUTOMIX_OVERLAP_AUTO..AUTOMIX_OVERLAP_CUSTOM } ?: AUTOMIX_OVERLAP_AUTO
+    fun setAutomixOverlapMode(mode: Int) = Prefs.putInt(
+        KEY_AUTOMIX_OVERLAP_MODE,
+        mode.takeIf { it in AUTOMIX_OVERLAP_AUTO..AUTOMIX_OVERLAP_CUSTOM } ?: AUTOMIX_OVERLAP_AUTO,
+    )
+
+    fun getAutomixOverlapCustomSec(): Int = Prefs.getInt(KEY_AUTOMIX_OVERLAP_CUSTOM_SEC, 8).coerceIn(1, 30)
+    fun setAutomixOverlapCustomSec(seconds: Int) = Prefs.putInt(KEY_AUTOMIX_OVERLAP_CUSTOM_SEC, seconds.coerceIn(1, 30))
 
     fun getAutomixStartOffsetMode(): Int = Prefs.getInt(KEY_AUTOMIX_START_OFFSET_MODE, AUTOMIX_START_OFFSET_AUTO)
     fun setAutomixStartOffsetMode(mode: Int) = Prefs.putInt(KEY_AUTOMIX_START_OFFSET_MODE, mode)
@@ -1039,6 +1057,17 @@ class PlayerPreferences {
     fun getMiniPlayerShowProgress(): Boolean = Prefs.getBoolean(KEY_MINI_PLAYER_SHOW_PROGRESS, true)
     fun setMiniPlayerShowProgress(show: Boolean) = Prefs.putBoolean(KEY_MINI_PLAYER_SHOW_PROGRESS, show)
     fun miniPlayerShowProgressFlow() = Prefs.booleanFlow(KEY_MINI_PLAYER_SHOW_PROGRESS, true)
+
+    fun getMiniPlayerContentMode(): MiniPlayerContentMode {
+        val name = Prefs.getString(KEY_MINI_PLAYER_CONTENT_MODE, MiniPlayerContentMode.AUTO.name)
+        return try {
+            MiniPlayerContentMode.valueOf(name ?: MiniPlayerContentMode.AUTO.name)
+        } catch (_: Exception) {
+            MiniPlayerContentMode.AUTO
+        }
+    }
+    fun setMiniPlayerContentMode(mode: MiniPlayerContentMode) = Prefs.putString(KEY_MINI_PLAYER_CONTENT_MODE, mode.name)
+    fun miniPlayerContentModeFlow(): Flow<MiniPlayerContentMode> = Prefs.flow.map { getMiniPlayerContentMode() }
 
     fun getMiniPlayerStyle(): MiniPlayerStyle {
         val name = Prefs.getString(KEY_MINI_PLAYER_STYLE, MiniPlayerStyle.STANDARD.name)

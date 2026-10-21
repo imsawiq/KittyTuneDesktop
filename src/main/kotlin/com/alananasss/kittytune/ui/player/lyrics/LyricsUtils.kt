@@ -180,6 +180,8 @@ object LyricsUtils {
     private val ENHANCED_WORD_PATTERN = Pattern.compile("<(\\d{2}):(\\d{2})\\.(\\d{2,3})>([^<]*)")
 
     private val NUMERIC_ENTITY_REGEX = Regex("&#(x)?([0-9a-fA-F]+);")
+    private val TTML_ROOT_REGEX = Regex("""<(?:[A-Za-z_][\w.-]*:)?tt(?:\s|>)""", RegexOption.IGNORE_CASE)
+    private const val MAX_TTML_DETECTION_CHARS = 4096
 
     private val LRC_TIMESTAMP = Regex("""\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?]""")
     private val ENHANCED_TIMESTAMP = Regex("""<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>""")
@@ -359,26 +361,32 @@ object LyricsUtils {
         return result
     }
 
+    /** Recognizes raw and HTML-escaped TTML so malformed XML never becomes plain lyrics. */
+    fun looksLikeTtml(content: String): Boolean = ttmlContentOrNull(content) != null
+
+    internal fun ttmlContentOrNull(content: String): String? {
+        val raw = content.removePrefix("\uFEFF").trimStart()
+        fun isXml(value: String): Boolean = value.startsWith("<?xml") ||
+            TTML_ROOT_REGEX.containsMatchIn(value.take(MAX_TTML_DETECTION_CHARS))
+        if (isXml(raw)) return raw
+        if (!raw.contains('&')) return null
+        return decodeHtmlEntities(raw).takeIf(::isXml)
+    }
+
     fun parseLyricsContent(content: String, totalDurationMs: Long): List<LyricLine> {
-        val trimmed = content.trim()
+        // Preserve entities inside raw XML; only unwrap documents escaped as a whole.
+        val raw = content.removePrefix("\uFEFF").trim()
+        val ttml = ttmlContentOrNull(raw)
         val parsed = when {
-            trimmed.startsWith("<tt") || trimmed.contains("<tt ") || trimmed.contains("<tt:") || trimmed.startsWith("<?xml") -> {
-                parseTtml(trimmed, totalDurationMs)
-            }
-            QRCParser.isQrc(trimmed) -> {
-                parseQrc(trimmed, totalDurationMs)
-            }
-            isYamlContent(trimmed) -> {
-                parseLyricsFile(content, totalDurationMs)
-            }
-            else -> {
-                parseLrc(content, totalDurationMs)
-            }
+            ttml != null -> parseTtml(ttml, totalDurationMs)
+            QRCParser.isQrc(raw) -> parseQrc(raw, totalDurationMs)
+            isYamlContent(raw) -> parseLyricsFile(content, totalDurationMs)
+            else -> parseLrc(content, totalDurationMs)
         }
         val withoutWatermarks = parsed.filterNot { isWatermarkLine(it.text) }
         // An authored one-line LRC can legitimately start at zero. Preserve the explicit timestamp;
         // untagged text and sheets with multiple identical zero stamps still fail the timing checks.
-        val explicitLrc = trimmed.lineSequence().any { LRC_PATTERN.matcher(it.trim()).matches() }
+        val explicitLrc = raw.lineSequence().any { LRC_PATTERN.matcher(it.trim()).matches() }
         if (!hasRealTimings(withoutWatermarks, explicitSingleLine = explicitLrc)) return emptyList()
         return insertInstrumentalBreaks(withoutWatermarks)
     }

@@ -372,12 +372,15 @@ object AutomixManager {
 
         val periodMs = (60_000f / outBeat.bpm).toDouble()
 
-        val overlapMode = prefs.getAutomixOverlapMode() // 0=Auto (4 bars), 1=2 bars, 2=4 bars, 3=8 bars, 4=Custom
+        val overlapMode = prefs.getAutomixOverlapMode()
+        val customOverlap = overlapMode == PlayerPreferences.AUTOMIX_OVERLAP_CUSTOM
+        val minimumOverlapMs = if (customOverlap) 1_000L else 3_000L
+        val maximumOverlapMs = if (customOverlap) 30_000L else 20_000L
         val baseOverlapMs = when (overlapMode) {
-            1 -> (8 * periodMs).toLong().coerceIn(4_000L, 10_000L) // 2 bars
-            2 -> (16 * periodMs).toLong().coerceIn(6_000L, 16_000L) // 4 bars
-            3 -> (32 * periodMs).toLong().coerceIn(10_000L, 20_000L) // 8 bars
-            4 -> prefs.getCrossfadeDuration() * 1000L
+            PlayerPreferences.AUTOMIX_OVERLAP_2BARS -> (8 * periodMs).toLong().coerceIn(4_000L, 10_000L) // 2 bars
+            PlayerPreferences.AUTOMIX_OVERLAP_4BARS -> (16 * periodMs).toLong().coerceIn(6_000L, 16_000L) // 4 bars
+            PlayerPreferences.AUTOMIX_OVERLAP_8BARS -> (32 * periodMs).toLong().coerceIn(10_000L, 20_000L) // 8 bars
+            PlayerPreferences.AUTOMIX_OVERLAP_CUSTOM -> prefs.getAutomixOverlapCustomSec() * 1000L
             else -> (16 * periodMs).toLong().coerceIn(6_000L, 16_000L) // Auto
         }
         val outCamelot = camelotCode(outBeat.keyPitchClass, outBeat.keyIsMinor)
@@ -385,7 +388,11 @@ object AutomixManager {
         val keyFit = if (prefs.getAutomixHarmonicMixEnabled()) KeyHarmony.between(outCamelot, inCamelot) else KeyHarmony.Fit.UNKNOWN
 
         // Moved to a shift, when one is made, in the block below; the blend is sized after it is known.
-        var overlapMs = baseOverlapMs.coerceIn(4_000L, 20_000L)
+        var overlapMs = if (customOverlap) {
+            baseOverlapMs.coerceIn(1_000L, 30_000L)
+        } else {
+            baseOverlapMs.coerceIn(4_000L, 20_000L)
+        }
 
         val latestTrigger = trackDuration - overlapMs
         // A mix-out point is only believed near the end of what is playing. One from an analysis of another
@@ -408,8 +415,18 @@ object AutomixManager {
             if (nearest >= currentPosition + 1000) triggerTime = nearest
         }
 
+        if (customOverlap) {
+            // Prefer an earlier phrase over shortening a user-selected duration when both fit.
+            val lastFullBlendTrigger = trackDuration - 500L - overlapMs
+            if (triggerTime > lastFullBlendTrigger) {
+                val phraseIndex = kotlin.math.floor((lastFullBlendTrigger - outBeat.firstBeatOffsetMs) / phraseMs)
+                val earlierTrigger = (outBeat.firstBeatOffsetMs + phraseIndex * phraseMs).toLong()
+                if (earlierTrigger >= currentPosition + 1000L) triggerTime = earlierTrigger
+            }
+        }
+
         val roomMs = trackDuration - 500 - triggerTime
-        if (overlapMs.coerceAtMost(roomMs) < 3000L || triggerTime >= trackDuration - 3000) {
+        if (overlapMs.coerceAtMost(roomMs) < minimumOverlapMs || triggerTime >= trackDuration - minimumOverlapMs) {
             _automixDebugInfo.value = partialDebug.copy(status = "fallback: trigger out of range")
             return AutomixPlanResult(plan = null, pairAnalyzed = true)
         }
@@ -442,7 +459,7 @@ object AutomixManager {
 
         // The blend is sized for the pair, in Auto only (a length chosen by hand is the listener's). Keys that agree, with a
         // similar drive, blend long; keys that fight, and a change from a loud track into a quiet one or back, are cut shorter.
-        if (overlapMode == 0) {
+        if (overlapMode == PlayerPreferences.AUTOMIX_OVERLAP_AUTO) {
             val effectiveFit = if (pitchRatio != 1f) KeyHarmony.Fit.SAME else keyFit
             val energyGap = if (outBeat.energy != null && inBeat.energy != null) abs(outBeat.energy - inBeat.energy) else 0f
             overlapMs = when (effectiveFit) {
@@ -492,9 +509,9 @@ object AutomixManager {
         val incomingRoomMs = nextDuration?.let {
             ((it - effectiveIncomingStart - 500L).coerceAtLeast(0L) / tempoRatio.toDouble()).toLong()
         } ?: Long.MAX_VALUE
-        val availableOverlapMs = minOf(roomMs, incomingRoomMs, 20_000L)
+        val availableOverlapMs = minOf(roomMs, incomingRoomMs, maximumOverlapMs)
         var finalOverlapMs = minOf(overlapMs, availableOverlapMs)
-        if (overlapMode == 0) {
+        if (overlapMode == PlayerPreferences.AUTOMIX_OVERLAP_AUTO) {
             // Harmonic/energy adjustments above must not turn a four-bar blend into, for example,
             // 4.8 bars. Finish on a bar boundary so the bass handover resolves on the downbeat.
             val barMs = periodMs * 4.0
@@ -507,7 +524,7 @@ object AutomixManager {
                 finalOverlapMs = 0L
             }
         }
-        if (finalOverlapMs < 3000L) {
+        if (finalOverlapMs < minimumOverlapMs) {
             _automixDebugInfo.value = partialDebug.copy(status = "fallback: insufficient incoming audio")
             return AutomixPlanResult(plan = null, pairAnalyzed = true)
         }

@@ -32,6 +32,7 @@ internal object ManualLyricsSearch {
     fun localResult(track: LyricsSearchTrack, raw: String): UnifiedLyricResult? {
         if (raw.isBlank()) return null
         val (lineSync, wordSync) = timingsOf(raw, track.durationMs)
+        if (!lineSync && LyricsUtils.looksLikeTtml(raw)) return null
         return UnifiedLyricResult(
             id = track.id,
             name = track.title,
@@ -123,6 +124,18 @@ internal object ManualLyricsSearch {
 
     fun cleanPreview(raw: String?): String? {
         if (raw.isNullOrBlank()) return null
+        // TTML must be parsed as XML, not tag-stripped: its attributes span lines and the
+        // unparsed markup would leak into the result list.
+        val ttml = LyricsUtils.ttmlContentOrNull(raw)
+        if (ttml != null) {
+            val lines = LyricsUtils.parseTtml(ttml, 0L)
+                .asSequence()
+                .map { it.text.trim() }
+                .filter { it.isNotBlank() }
+                .take(2)
+                .toList()
+            return lines.joinToString(" • ").ifBlank { null }
+        }
         val lines = LyricsUtils.cleanPlainLyrics(raw).lines()
             .map { it.replace(Regex("<[^>]+>"), "").replace(Regex("""\(\d+:\d+\)"""), "").trim() }
             .filter { it.isNotBlank() && !it.startsWith("[") && !it.startsWith("{") }
@@ -260,6 +273,7 @@ internal object ManualLyricsSearch {
                 duration = (track.durationMs / 1000L).toInt(),
             ).getOrNull()?.takeIf { it.isNotBlank() } ?: continue
             val (lineSync, wordSync) = timingsOf(raw, track.durationMs)
+            if (!lineSync && LyricsUtils.looksLikeTtml(raw)) continue
             return listOf(
                 UnifiedLyricResult(
                     id = query,
