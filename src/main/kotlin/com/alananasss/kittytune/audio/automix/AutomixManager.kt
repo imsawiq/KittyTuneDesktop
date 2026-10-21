@@ -487,6 +487,31 @@ object AutomixManager {
             incomingStart.coerceAtLeast(0L)
         }
 
+        // The incoming deck advances at tempoRatio source milliseconds per output millisecond.
+        // Keep both decks alive through the blend, including when a custom intro skips near its end.
+        val incomingRoomMs = nextDuration?.let {
+            ((it - effectiveIncomingStart - 500L).coerceAtLeast(0L) / tempoRatio.toDouble()).toLong()
+        } ?: Long.MAX_VALUE
+        val availableOverlapMs = minOf(roomMs, incomingRoomMs, 20_000L)
+        var finalOverlapMs = minOf(overlapMs, availableOverlapMs)
+        if (overlapMode == 0) {
+            // Harmonic/energy adjustments above must not turn a four-bar blend into, for example,
+            // 4.8 bars. Finish on a bar boundary so the bass handover resolves on the downbeat.
+            val barMs = periodMs * 4.0
+            val availableBars = kotlin.math.floor(availableOverlapMs / barMs).toLong()
+            if (availableBars > 0L) {
+                val preferredBars = kotlin.math.round(finalOverlapMs / barMs).toLong().coerceAtLeast(1L)
+                val alignedOverlapMs = (minOf(preferredBars, availableBars) * barMs).toLong()
+                finalOverlapMs = alignedOverlapMs
+            } else {
+                finalOverlapMs = 0L
+            }
+        }
+        if (finalOverlapMs < 3000L) {
+            _automixDebugInfo.value = partialDebug.copy(status = "fallback: insufficient incoming audio")
+            return AutomixPlanResult(plan = null, pairAnalyzed = true)
+        }
+
         val plan = AutomixPlan(
             currentId = currentId,
             nextId = nextId,
@@ -494,7 +519,7 @@ object AutomixManager {
             incomingStartMs = effectiveIncomingStart,
             tempoRatio = tempoRatio,
             pitchRatio = pitchRatio,
-            overlapMs = overlapMs.coerceAtMost(roomMs),
+            overlapMs = finalOverlapMs,
         )
 
         currentAutomixPlan = plan

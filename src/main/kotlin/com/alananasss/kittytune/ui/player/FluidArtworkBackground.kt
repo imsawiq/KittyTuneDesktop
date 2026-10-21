@@ -494,8 +494,8 @@ fun FluidArtworkBackground(
     // Stopped while the window cannot be seen (minimised with the full player open, say); the field
     // resumes from where it was, since `seconds` is kept.
     val isSeen = com.alananasss.kittytune.core.LocalWindowSeen.current
-    LaunchedEffect(isSeen) {
-        if (!isSeen) return@LaunchedEffect
+    LaunchedEffect(isSeen, current != null) {
+        if (!isSeen || current == null) return@LaunchedEffect
         // Paced by `delay`, not by awaiting frames: awaiting a frame asks for one, so the old loop had
         // the whole window rendered at the display rate even though the field only moves thirty times a
         // second. Now thirty frames a second are all that is asked for.
@@ -521,8 +521,11 @@ fun FluidArtworkBackground(
     }
 
     Box(modifier) {
-        // Fallback is always composed underneath so the background is never transparent
-        fallback()
+        // Once the artwork is opaque, release the hidden fallback and its draw resources.
+        // Recompose it before fading out so loading failures and missing covers stay covered.
+        if (current == null || appear.value < 1f) {
+            fallback()
+        }
 
         if (current != null) {
             Box(

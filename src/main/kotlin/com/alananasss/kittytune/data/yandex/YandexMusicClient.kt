@@ -1,13 +1,27 @@
 package com.alananasss.kittytune.data.yandex
 
 import com.alananasss.kittytune.core.NamedPrefs
+import com.alananasss.kittytune.data.LyricsMatcher
 import com.alananasss.kittytune.data.catalog.CatalogSong
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
+import okhttp3.Response
+import java.io.IOException
+import kotlin.coroutines.resume
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
@@ -95,6 +109,86 @@ object YandexMusicClient {
         data object RegionBlocked : Result
         data object Failed : Result
     }
+
+    /** Authenticated monthly listeners only; ambiguous names and unavailable statistics stay absent. */
+    suspend fun monthlyListeners(artistName: String): Long? = withContext(Dispatchers.IO) {
+        val stored = token ?: return@withContext null
+        val normalizedName = normalizeArtistName(artistName)
+        if (normalizedName.isEmpty()) return@withContext null
+        try {
+            val requestClient = client.newBuilder().callTimeout(8, TimeUnit.SECONDS).build()
+            val search = listenerResponse(
+                requestClient,
+                "/search?type=artist&page=0&nocorrect=false&text=" + java.net.URLEncoder.encode(artistName, "UTF-8"),
+                stored,
+            ) ?: return@withContext null
+            currentCoroutineContext().ensureActive()
+            val matches = search["artists"]?.jsonObject?.get("results")?.jsonArray.orEmpty()
+                .mapNotNull { element ->
+                    val artist = element as? JsonObject ?: return@mapNotNull null
+                    if (normalizeArtistName(artist["name"]?.jsonPrimitive?.contentOrNull.orEmpty()) != normalizedName) {
+                        return@mapNotNull null
+                    }
+                    artist["id"]?.jsonPrimitive?.contentOrNull?.takeIf { id ->
+                        id.isNotEmpty() && id.length <= 32 && id.all { it in '0'..'9' }
+                    }
+                }.distinct()
+            val artistId = matches.singleOrNull() ?: return@withContext null
+            val brief = listenerResponse(requestClient, "/artists/$artistId/brief-info", stored)
+                ?: return@withContext null
+            currentCoroutineContext().ensureActive()
+            val artist = brief["artist"]?.jsonObject ?: return@withContext null
+            if (artist["id"]?.jsonPrimitive?.contentOrNull != artistId ||
+                normalizeArtistName(artist["name"]?.jsonPrimitive?.contentOrNull.orEmpty()) != normalizedName) {
+                return@withContext null
+            }
+            brief["stats"]?.jsonObject?.get("lastMonthListeners")?.jsonPrimitive?.longOrNull
+                ?.takeIf { it > 0L }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            currentCoroutineContext().ensureActive()
+            null
+        }
+    }
+
+    private fun normalizeArtistName(name: String): String = LyricsMatcher.normalize(name).replace(" ", "")
+
+    private suspend fun listenerResponse(requestClient: OkHttpClient, path: String, storedToken: String): JsonObject? =
+        suspendCancellableCoroutine { continuation ->
+            val call = requestClient.newCall(
+                Request.Builder().url(API + path)
+                    .header("Authorization", authHeader(storedToken))
+                    .header("X-Yandex-Music-Client", CLIENT_HEADER)
+                    .build(),
+            )
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, error: IOException) {
+                    continuation.resume(null)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val result = try {
+                        response.use {
+                            val body = it.body
+                            if (!it.isSuccessful || body == null || body.contentLength() > MAX_LISTENER_RESPONSE_BYTES) {
+                                null
+                            } else {
+                                val bytes = body.byteStream().readNBytes(MAX_LISTENER_RESPONSE_BYTES + 1)
+                                if (bytes.size > MAX_LISTENER_RESPONSE_BYTES) null
+                                else json.parseToJsonElement(bytes.toString(Charsets.UTF_8)).jsonObject["result"] as? JsonObject
+                            }
+                        }
+                    } catch (_: Exception) {
+                        null
+                    }
+                    continuation.resume(result)
+                }
+            })
+        }
+
+    private const val MAX_LISTENER_RESPONSE_BYTES = 2 * 1024 * 1024
 
     suspend fun searchSongs(term: String, limit: Int = 25): Result = withContext(Dispatchers.IO) {
         if (term.isBlank()) return@withContext Result.Found(emptyList())

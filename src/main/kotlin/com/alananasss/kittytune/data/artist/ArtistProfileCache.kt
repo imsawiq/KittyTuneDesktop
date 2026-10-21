@@ -12,20 +12,22 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.TimeUnit
 
+internal typealias ArtistProfileCache = ArtistLookupCache<ArtistReach.Profile>
+
 /** Fresh artist data with shared requests, short retries for misses, and bounded background work. */
-internal class ArtistProfileCache(
+internal class ArtistLookupCache<T>(
     private val scope: CoroutineScope,
-    private val resolve: suspend (String) -> ArtistReach.Profile?,
+    private val resolve: suspend (String) -> T?,
     private val nowNanos: () -> Long = System::nanoTime,
 ) {
-    private data class Lookup(val profile: ArtistReach.Profile?, val completedAt: Long, val lifetime: Long)
+    private data class Lookup<T>(val profile: T?, val completedAt: Long, val lifetime: Long)
 
     private val lock = Any()
-    private val cache = BoundedCache<String, Lookup>(256)
-    private val inFlight = mutableMapOf<String, Deferred<ArtistReach.Profile?>>()
+    private val cache = BoundedCache<String, Lookup<T>>(256)
+    private val inFlight = mutableMapOf<String, Deferred<T?>>()
     private val requests = Semaphore(4)
 
-    suspend fun get(key: String, name: String): ArtistReach.Profile? {
+    suspend fun get(key: String, name: String): T? {
         val request = synchronized(lock) {
             cache[key]?.let { cached ->
                 if (nowNanos() - cached.completedAt in 0L until cached.lifetime) return cached.profile

@@ -16,6 +16,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import com.alananasss.kittytune.core.Strings
 import com.alananasss.kittytune.core.str
+import com.alananasss.kittytune.data.artist.ArtistAudience
 import com.alananasss.kittytune.data.artist.ArtistReach
 import java.text.NumberFormat
 import kotlinx.coroutines.currentCoroutineContext
@@ -26,6 +27,16 @@ import kotlinx.coroutines.isActive
 @Composable
 fun rememberArtistProfile(artistName: String?): ArtistReach.Profile? =
     rememberArtistLookup(artistName, resolve = ArtistReach::profileOf)
+
+/** Available monthly counts, kept separate because audiences overlap between services. */
+@Composable
+fun rememberArtistAudience(artistName: String?): List<ArtistAudience.Count> =
+    rememberArtistLookup(artistName, resolve = ArtistAudience::monthlyOf).orEmpty()
+
+fun artistAudienceLabel(counts: List<ArtistAudience.Count>, separator: String = "  ·  "): String? =
+    counts.takeIf { it.isNotEmpty() }?.joinToString(separator) {
+        "${it.service.label}: ${monthlyListenersLabel(it.listeners)}"
+    }
 
 /** A banner for [artistName] from their streaming profile, or a member's for a duo; null before it is found and when there is none. */
 @Composable
@@ -65,10 +76,10 @@ fun MonthlyListenersText(
     style: TextStyle = LocalTextStyle.current,
     color: Color = LocalContentColor.current,
 ) {
-    val listeners = rememberArtistProfile(artistName)?.monthlyListeners
-    AnimatedVisibility(visible = listeners != null, enter = fadeIn() + expandVertically(), modifier = modifier) {
-        val label = listeners?.let { "Spotify · ${monthlyListenersLabel(it)}" }.orEmpty()
-        Tip(label) {
+    val counts = rememberArtistAudience(artistName)
+    AnimatedVisibility(visible = counts.isNotEmpty(), enter = fadeIn() + expandVertically(), modifier = modifier) {
+        val label = artistAudienceLabel(counts).orEmpty()
+        Tip(artistAudienceLabel(counts, separator = "\n").orEmpty()) {
             Text(
                 text = label,
                 style = style,

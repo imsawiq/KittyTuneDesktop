@@ -2375,6 +2375,7 @@ fun ArtistPresetCard(preset: ArtistPresetItem) {
 @Composable
 private fun ArtistAboutDialog(user: User, onDismiss: () -> Unit, playerViewModel: PlayerViewModel) {
     val profile = com.alananasss.kittytune.ui.common.rememberArtistProfile(user.username)
+    val audiences = com.alananasss.kittytune.ui.common.rememberArtistAudience(user.username)
     val text = user.description?.takeIf { it.isNotBlank() } ?: profile?.biography.orEmpty()
     val uriHandler = LocalUriHandler.current
     com.alananasss.kittytune.core.EscapableAlertDialog(
@@ -2382,9 +2383,9 @@ private fun ArtistAboutDialog(user: User, onDismiss: () -> Unit, playerViewModel
         title = { Text(user.username ?: str("artist_about"), fontWeight = FontWeight.Bold) },
         text = {
             Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
-                profile?.monthlyListeners?.let {
+                com.alananasss.kittytune.ui.common.artistAudienceLabel(audiences, separator = "\n")?.let { label ->
                     Text(
-                        com.alananasss.kittytune.ui.common.monthlyListenersLabel(it),
+                        label,
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.primary,
                     )

@@ -218,8 +218,9 @@ internal fun ArtistHero(
                         }
                     }
                     Spacer(Modifier.height(4.dp))
+                    val audiences = com.alananasss.kittytune.ui.common.rememberArtistAudience(user.username)
                     val facts = listOfNotNull(
-                        profile?.monthlyListeners?.let { "Spotify · ${monthlyListenersLabel(it)}" },
+                        com.alananasss.kittytune.ui.common.artistAudienceLabel(audiences),
                         (if (profileViewModel.isSpotifyProfile) profile?.followers else user.followersCount.toLong())?.takeIf { it > 0 }?.let {
                             "${NumberFormat.getIntegerInstance(com.alananasss.kittytune.core.Strings.locale()).format(it)} ${str("profile_followers")}"
                         },
@@ -227,7 +228,7 @@ internal fun ArtistHero(
                     )
                     if (facts.isNotEmpty()) {
                         com.alananasss.kittytune.ui.common.Tip(
-                            text = profile?.monthlyListeners?.let { "Spotify: ${monthlyListenersLabel(it)}" }.orEmpty(),
+                            text = com.alananasss.kittytune.ui.common.artistAudienceLabel(audiences, separator = "\n").orEmpty(),
                         ) {
                             Text(
                                 facts.joinToString("  ·  "),

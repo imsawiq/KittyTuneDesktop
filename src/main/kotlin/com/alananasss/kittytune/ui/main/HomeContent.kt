@@ -2057,8 +2057,9 @@ private fun SearchArtistRow(user: User, onClick: () -> Unit) {
             }
             val followersCount = user.followersCount
             val followersText = listOfNotNull(
-                com.alananasss.kittytune.ui.common.rememberArtistProfile(user.username)?.monthlyListeners
-                    ?.let { com.alananasss.kittytune.ui.common.monthlyListenersLabel(it) },
+                com.alananasss.kittytune.ui.common.artistAudienceLabel(
+                    com.alananasss.kittytune.ui.common.rememberArtistAudience(user.username)
+                ),
                 followersCount.takeIf { it > 0 }?.let {
                     java.text.NumberFormat.getCompactNumberInstance(Strings.locale(), java.text.NumberFormat.Style.SHORT)
                         .format(it) + " " + str("profile_followers")
